@@ -26,7 +26,7 @@ O Suwayomi já traz dois bancos, e o fork mantém ambos (não foi adicionado SQL
 
 `NFS_TARGET=192.168.1.50:/volume1/mangas` faz o `entrypoint.sh` montar o export em `/data/downloads`
 (`NFS_OPTIONS`, padrão `rw,noatime,tcp`); o container precisa de `cap_add: SYS_ADMIN`. Com `NFS_TARGET` vazio
-usa o volume local. `NFS_FALLBACK_LOCAL=true` cai para o disco local em vez de encerrar se o mount falhar.
+usa o volume local. Em NFSv3 o container não tem `rpc.statd`: use `NFS_OPTIONS=rw,noatime,tcp,nolock` (o NFSv4 não precisa). `NFS_FALLBACK_LOCAL=true` cai para o disco local em vez de encerrar se o mount falhar.
 `GET /api/v1/karasu/health` informa se o armazenamento é `nfs` ou `local` (lido de `/proc/mounts`) e o espaço livre.
 
 ## Fontes mescladas — semântica
