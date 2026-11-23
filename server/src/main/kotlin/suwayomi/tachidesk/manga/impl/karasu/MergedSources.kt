@@ -10,6 +10,7 @@ package suwayomi.tachidesk.manga.impl.karasu
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.chapter.ChapterRecognition
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
@@ -222,11 +223,17 @@ object MergedSources {
             .parseChapterNumber(mangaTitle, chapter.name, chapter.chapter_number.toDouble())
             .toFloat()
 
+    /**
+     * Only HTTP sources can be used as extra/reserve: their pages are served by [Page.getPageImage],
+     * which needs an HttpSource. Anything else (local source, missing extension) is skipped.
+     */
+    private suspend fun usableSource(sourceId: Long): HttpSource? = getSourceOrNull(sourceId) as? HttpSource
+
     private suspend fun fetchChapters(
         link: Link,
         mangaTitle: String,
     ): List<SChapter>? {
-        val source = getSourceOrNull(link.sourceId) ?: return null
+        val source = usableSource(link.sourceId) ?: return null
         val sManga =
             SManga.create().apply {
                 url = link.url
@@ -319,7 +326,7 @@ object MergedSources {
         if (chapterNumber < 0f) return null
         for (link in links(mangaId)) {
             if (link.sourceId == primarySourceId) continue
-            val source = getSourceOrNull(link.sourceId) ?: continue
+            val source = usableSource(link.sourceId) ?: continue
             try {
                 val chapter =
                     fetchChapters(link, mangaTitle)
