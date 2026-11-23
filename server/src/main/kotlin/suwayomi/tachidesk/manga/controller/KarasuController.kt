@@ -22,11 +22,13 @@ import suwayomi.tachidesk.manga.impl.karasu.DeletionRequestDto
 import suwayomi.tachidesk.manga.impl.karasu.HistoryRequestDto
 import suwayomi.tachidesk.manga.impl.karasu.KarasuBackups
 import suwayomi.tachidesk.manga.impl.karasu.KarasuHealth
+import suwayomi.tachidesk.manga.impl.karasu.KarasuOperations
 import suwayomi.tachidesk.manga.impl.karasu.KarasuSync
 import suwayomi.tachidesk.manga.impl.karasu.MangaRefDto
 import suwayomi.tachidesk.manga.impl.karasu.MergedGroupDto
 import suwayomi.tachidesk.manga.impl.karasu.MergedSourceDto
 import suwayomi.tachidesk.manga.impl.karasu.MergedSources
+import suwayomi.tachidesk.manga.impl.karasu.OperationsPostDto
 import suwayomi.tachidesk.manga.impl.karasu.PolicyDto
 import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.server.JavalinSetup.Attribute
@@ -240,6 +242,36 @@ object KarasuController {
         val userId = ctx.user()
         val body = ctx.readBody<HistoryRequestDto>() ?: return
         ctx.respond(KarasuSync.setHistory(userId, body.entries))
+    }
+
+    fun operationsPost(ctx: Context) {
+        ctx.user()
+        val body = ctx.readBody<OperationsPostDto>() ?: return
+        try {
+            ctx.respond(KarasuOperations.append(body.operations))
+        } catch (e: IllegalArgumentException) {
+            ctx.fail(HttpStatus.BAD_REQUEST, e.message ?: "Invalid operations")
+        }
+    }
+
+    fun operationsGet(ctx: Context) {
+        ctx.user()
+        val afterSeq = ctx.queryParam("afterSeq")?.takeIf { it.isNotBlank() }
+        val limit = ctx.queryParam("limit")?.takeIf { it.isNotBlank() }
+        if ((afterSeq != null && afterSeq.toLongOrNull() == null) || (limit != null && limit.toIntOrNull() == null)) {
+            return ctx.fail(HttpStatus.BAD_REQUEST, "afterSeq and limit must be integers")
+        }
+        try {
+            ctx.respond(
+                KarasuOperations.list(
+                    afterSeq = afterSeq?.toLong() ?: 0L,
+                    entity = ctx.queryParam("entity"),
+                    limit = limit?.toInt() ?: KarasuOperations.DEFAULT_LIST_LIMIT,
+                ),
+            )
+        } catch (e: IllegalArgumentException) {
+            ctx.fail(HttpStatus.BAD_REQUEST, e.message ?: "Invalid query")
+        }
     }
 
     fun deletionsGet(ctx: Context) {

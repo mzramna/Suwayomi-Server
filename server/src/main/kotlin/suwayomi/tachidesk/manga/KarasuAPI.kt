@@ -41,6 +41,9 @@ object KarasuAPI {
 
             put("history", KarasuController::historyPut)
 
+            post("operations", KarasuController::operationsPost)
+            get("operations", KarasuController::operationsGet)
+
             post("deletions", KarasuController::deletionsPost)
             get("deletions", KarasuController::deletionsGet)
         }

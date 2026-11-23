@@ -50,6 +50,7 @@ import suwayomi.tachidesk.manga.impl.backup.proto.ProtoBackupExport
 import suwayomi.tachidesk.manga.impl.download.DownloadManager
 import suwayomi.tachidesk.manga.impl.extension.Extension
 import suwayomi.tachidesk.manga.impl.extension.ExtensionStoreService
+import suwayomi.tachidesk.manga.impl.karasu.KarasuOperations
 import suwayomi.tachidesk.manga.impl.update.IUpdater
 import suwayomi.tachidesk.manga.impl.update.Updater
 import suwayomi.tachidesk.manga.impl.util.lang.renameTo
@@ -362,6 +363,14 @@ fun applicationSetup() {
     } catch (e: Exception) {
         logger.error(e) { "Failed to setup LocalSource" }
         shutdownApp(ExitCode.LocalSourceSetupFailure)
+    }
+
+    // the Karasu operation log keeps 90 days
+    try {
+        val pruned = KarasuOperations.pruneOld()
+        if (pruned > 0) logger.info { "Pruned $pruned karasu operations older than ${KarasuOperations.RETENTION_DAYS} days" }
+    } catch (e: Exception) {
+        logger.warn(e) { "Could not prune the karasu operation log" }
     }
 
     serverConfig.subscribeTo(

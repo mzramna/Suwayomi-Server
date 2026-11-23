@@ -44,6 +44,7 @@ import suwayomi.tachidesk.i18n.LocalizationHelper
 import suwayomi.tachidesk.i18n.MR
 import suwayomi.tachidesk.manga.KarasuAPI
 import suwayomi.tachidesk.manga.MangaAPI
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRequestContext
 import suwayomi.tachidesk.manga.impl.util.network.isHostUnreachable
 import suwayomi.tachidesk.opds.OpdsAPI
 import suwayomi.tachidesk.server.user.ForbiddenException
@@ -261,6 +262,15 @@ object JavalinSetup {
             )
         }
 
+        // Who is calling, for the Karasu operation log: always set (also for unmatched routes and OPTIONS) so a pooled
+        // thread never keeps the device of a previous request; cleared again once the request is done.
+        before { ctx ->
+            val device = KarasuRequestContext.normalize(ctx.header(KarasuRequestContext.HEADER))
+            KarasuRequestContext.set(device)
+            device?.let { ctx.setAttribute(Attribute.KarasuDevice, it) }
+        }
+        after { KarasuRequestContext.clear() }
+
         beforeMatched { ctx ->
             val isWebManifest =
                 listOf("site.webmanifest", "manifest.json", "login.html").any {
@@ -423,6 +433,9 @@ object JavalinSetup {
         data object TachideskUser : Attribute<UserType>("user")
 
         data object TachideskBasic : Attribute<Boolean>("basicAuthValid")
+
+        /** Value of the `X-Karasu-Device` header; absent when the request did not send it. */
+        data object KarasuDevice : Attribute<String>("karasuDevice")
     }
 
     // 424 rather than 502: clients and proxies read 502 to 504 as the server being down

@@ -22,10 +22,13 @@ import suwayomi.tachidesk.server.user.UserType
  */
 class TachideskGraphQLContextFactory : GraphQLContextFactory<Context> {
     override suspend fun generateContext(request: Context): GraphQLContext =
-        mapOf(
-            Context::class to request,
-            request.getPair(Attribute.TachideskUser),
-        ).toGraphQLContext()
+        buildMap<Any, Any> {
+            put(Context::class, request)
+            val (userKey, user) = request.getPair(Attribute.TachideskUser)
+            put(userKey, user)
+            // X-Karasu-Device, when the request sent it (the operation log reads it from the resolvers)
+            request.attribute<String>(Attribute.KarasuDevice.name)?.let { put(Attribute.KarasuDevice, it) }
+        }.toGraphQLContext()
 
     fun generateContextMap(
         user: UserType,

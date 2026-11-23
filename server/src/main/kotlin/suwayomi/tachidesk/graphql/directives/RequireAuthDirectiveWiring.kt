@@ -13,6 +13,7 @@ import graphql.schema.DataFetcher
 import graphql.schema.DataFetchingEnvironmentImpl
 import graphql.schema.GraphQLFieldDefinition
 import suwayomi.tachidesk.graphql.server.getAttribute
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRequestContext
 import suwayomi.tachidesk.server.JavalinSetup.Attribute
 import suwayomi.tachidesk.server.user.UserPermission
 import suwayomi.tachidesk.server.user.UserRole
@@ -62,7 +63,10 @@ class RequireAuthDirectiveWiring : KotlinSchemaDirectiveWiring {
                         .arguments(newArguments)
                         .build()
 
-                originalDataFetcher.get(modifiedEnv)
+                // Resolvers run synchronously in this call, so the device is only needed on this thread, for the duration of it
+                KarasuRequestContext.withDevice(env.graphQlContext.get<String>(Attribute.KarasuDevice)) {
+                    originalDataFetcher.get(modifiedEnv)
+                }
             }
 
         environment.setDataFetcher(authDataFetcher)

@@ -99,17 +99,20 @@ abstract class GraphQLTest : ApplicationTest() {
      * @param query the GraphQL operation string
      * @param variables optional variables map
      * @param user the [UserType] to run the operation as (defaults to [admin])
+     * @param device the `X-Karasu-Device` header of the simulated request; null means the request did not send it
      */
     protected fun graphql(
         query: String,
         variables: Map<String, Any?>? = null,
         user: UserType = admin,
+        device: String? = null,
     ): GraphQLResponse<*> =
         runBlocking {
             val context =
-                mapOf(
-                    JavalinSetup.Attribute.TachideskUser to user,
-                ).toGraphQLContext()
+                buildMap<Any, Any> {
+                    put(JavalinSetup.Attribute.TachideskUser, user)
+                    device?.let { put(JavalinSetup.Attribute.KarasuDevice, it) }
+                }.toGraphQLContext()
 
             val request = GraphQLRequest(query = query, variables = variables)
 
