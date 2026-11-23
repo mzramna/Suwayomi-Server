@@ -171,7 +171,14 @@ object KarasuController {
 
     fun backupDelete(ctx: Context) {
         ctx.user()
-        if (KarasuBackups.delete(ctx.pathParam("id"))) ctx.status(HttpStatus.NO_CONTENT) else ctx.fail(HttpStatus.NOT_FOUND, "Backup not found")
+        if (KarasuBackups.delete(
+                ctx.pathParam("id"),
+            )
+        ) {
+            ctx.status(HttpStatus.NO_CONTENT)
+        } else {
+            ctx.fail(HttpStatus.NOT_FOUND, "Backup not found")
+        }
     }
 
     fun mergedAll(ctx: Context) {

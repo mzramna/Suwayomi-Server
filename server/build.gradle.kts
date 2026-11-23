@@ -248,7 +248,8 @@ tasks {
     register<Download>("downloadWebUI") {
         src(
             webUIZipUrlOverride
-                ?: "https://github.com/Suwayomi/Suwayomi-WebUI-preview/releases/download/$webUIRevisionTag/Suwayomi-WebUI-$webUIRevisionTag.zip",
+                ?: "https://github.com/Suwayomi/Suwayomi-WebUI-preview/releases/download/" +
+                "$webUIRevisionTag/Suwayomi-WebUI-$webUIRevisionTag.zip",
         )
         dest("src/main/resources/WebUI.zip")
 

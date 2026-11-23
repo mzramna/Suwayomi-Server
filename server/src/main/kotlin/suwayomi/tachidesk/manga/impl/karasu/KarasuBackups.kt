@@ -34,10 +34,15 @@ data class BackupInfoDto(
 object KarasuBackups {
     private const val SEPARATOR = "__"
 
-    private fun dir(): File =
-        File(Injekt.get<ApplicationDirs>().automatedBackupRoot, "karasu").also { it.mkdirs() }
+    private fun dir(): File = File(Injekt.get<ApplicationDirs>().automatedBackupRoot, "karasu").also { it.mkdirs() }
 
-    private fun clean(value: String): String = SafePath.buildValidFilename(value.trim()).replace(SEPARATOR, "_")
+    // buildValidFilename turns an empty name into "(invalid)", so blanks are kept empty on purpose
+    private fun clean(value: String): String =
+        value
+            .trim()
+            .takeIf { it.isNotEmpty() }
+            ?.let { SafePath.buildValidFilename(it).replace(SEPARATOR, "_") }
+            .orEmpty()
 
     private fun toInfo(file: File): BackupInfoDto {
         val parts = file.name.split(SEPARATOR, limit = 3)
