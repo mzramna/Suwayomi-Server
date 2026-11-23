@@ -16,6 +16,7 @@ import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.core.plus
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
@@ -27,6 +28,8 @@ import suwayomi.tachidesk.graphql.types.MangaType
 import suwayomi.tachidesk.graphql.types.MetaInput
 import suwayomi.tachidesk.manga.impl.Category
 import suwayomi.tachidesk.manga.impl.CategoryManga
+import suwayomi.tachidesk.manga.impl.karasu.KarasuAction
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.impl.util.lang.isEmpty
 import suwayomi.tachidesk.manga.model.dataclass.IncludeOrExclude
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
@@ -287,6 +290,20 @@ class CategoryMutation {
         ids: List<Int>,
         patch: UpdateCategoryPatch,
     ) {
+        // names before the rename, to log only the categories whose name really changes
+        val oldNames =
+            if (patch.name != null && KarasuRecorder.enabled()) {
+                transaction {
+                    CategoryTable
+                        .select(CategoryTable.id, CategoryTable.name)
+                        .where {
+                            CategoryTable.id inList ids and (CategoryTable.user eq userId) and
+                                (CategoryTable.isDefaultCategory eq false)
+                        }.associate { it[CategoryTable.id].value to it[CategoryTable.name] }
+                }
+            } else {
+                emptyMap()
+            }
         transaction {
             // The default category row is protected from rename and landing-flag changes;
             if (patch.name != null) {
@@ -321,6 +338,9 @@ class CategoryMutation {
                     }
                 }
             }
+        }
+        oldNames.forEach { (id, oldName) ->
+            if (patch.name != null && patch.name != oldName) KarasuRecorder.categoryRenamed(id, patch.name)
         }
     }
 
@@ -475,7 +495,10 @@ class CategoryMutation {
 
                 Category.normalizeCategories(userId)
 
-                CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq id and (CategoryTable.user eq userId) }.first())
+                id to CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq id and (CategoryTable.user eq userId) }.first())
+            }.let { (id, created) ->
+                KarasuRecorder.categoryCreated(id.value, input.name)
+                created
             }
 
         return CreateCategoryPayload(clientMutationId, category)
@@ -509,6 +532,7 @@ class CategoryMutation {
             )
         }
 
+        var deleted = false
         val (category, mangas) =
             transaction {
                 val category =
@@ -535,6 +559,7 @@ class CategoryMutation {
 
                 Category.normalizeCategories(userId)
                 category?.let { SyncYomiSyncService.rememberDeletedCategory(userId, it[CategoryTable.uid]) }
+                deleted = category != null
 
                 if (category != null) {
                     CategoryType(category)
@@ -542,6 +567,8 @@ class CategoryMutation {
                     null
                 } to mangas
             }
+
+        if (deleted) KarasuRecorder.categoryDeleted(categoryId)
 
         return DeleteCategoryPayload(clientMutationId, category, mangas)
     }
@@ -582,6 +609,14 @@ class CategoryMutation {
         val removeFromCategoryIds = patch.removeFromCategories.orEmpty()
         val addToCategoryIds = patch.addToCategories.orEmpty()
         transaction {
+            val removing = patch.clearCategories == true || removeFromCategoryIds.isNotEmpty()
+            // links that exist before the delete are the ones that really go away
+            val removedLinks =
+                if (removing) {
+                    KarasuRecorder.existingLinks(userId, ids, removeFromCategoryIds.takeIf { patch.clearCategories != true })
+                } else {
+                    emptyList()
+                }
             if (patch.clearCategories == true) {
                 CategoryMangaTable.deleteWhere { CategoryMangaTable.manga inList ids and (CategoryMangaTable.user eq userId) }
             } else if (removeFromCategoryIds.isNotEmpty()) {
@@ -591,6 +626,7 @@ class CategoryMutation {
                         (CategoryMangaTable.user eq userId)
                 }
             }
+            KarasuRecorder.linksChanged(removedLinks, KarasuAction.REMOVE)
             if (addToCategoryIds.isNotEmpty()) {
                 CategoryManga.addMangasToCategories(userId, ids, addToCategoryIds)
             }

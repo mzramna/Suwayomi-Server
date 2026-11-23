@@ -25,6 +25,8 @@ import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import suwayomi.tachidesk.manga.impl.karasu.KarasuAction
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.model.dataclass.CategoryDataClass
 import suwayomi.tachidesk.manga.model.dataclass.MangaDataClass
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
@@ -87,6 +89,7 @@ object CategoryManga {
                 this[CategoryMangaTable.user] = userId
             }
         }
+        KarasuRecorder.linksChanged(newMangaCategoryMappings, KarasuAction.SET)
     }
 
     fun removeMangaFromCategory(
@@ -95,6 +98,7 @@ object CategoryManga {
         categoryId: Int,
     ) {
         if (categoryId == Category.getDefaultCategoryId(userId)) return
+        val existing = KarasuRecorder.existingLinks(userId, listOf(mangaId), listOf(categoryId))
         transaction {
             CategoryMangaTable.deleteWhere {
                 (CategoryMangaTable.category eq categoryId) and
@@ -102,15 +106,18 @@ object CategoryManga {
                     (CategoryMangaTable.user eq userId)
             }
         }
+        KarasuRecorder.linksChanged(existing, KarasuAction.REMOVE)
     }
 
     fun removeMangaFromAllCategories(
         userId: Int,
         mangaId: Int,
     ) {
+        val existing = KarasuRecorder.existingLinks(userId, listOf(mangaId))
         transaction {
             CategoryMangaTable.deleteWhere { (CategoryMangaTable.user eq userId) and (CategoryMangaTable.manga eq mangaId) }
         }
+        KarasuRecorder.linksChanged(existing, KarasuAction.REMOVE)
     }
 
     /**

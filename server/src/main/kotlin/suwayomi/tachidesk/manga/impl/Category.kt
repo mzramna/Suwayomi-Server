@@ -24,6 +24,7 @@ import org.jetbrains.exposed.v1.jdbc.statements.toExecutable
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.global.impl.sync.SyncYomiSyncService
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.model.dataclass.CategoryDataClass
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryMetaTable
@@ -45,6 +46,17 @@ object Category {
     fun createCategories(
         userId: Int,
         names: List<String>,
+    ): List<Int> {
+        val createdNames = mutableMapOf<Int, String>()
+        val ids = createCategoriesInternal(userId, names, createdNames)
+        createdNames.forEach { (id, name) -> KarasuRecorder.categoryCreated(id, name) }
+        return ids
+    }
+
+    private fun createCategoriesInternal(
+        userId: Int,
+        names: List<String>,
+        createdNames: MutableMap<Int, String>,
     ): List<Int> =
         transaction {
             val categoryIdToName = getCategoryList(userId).associate { it.id to it.name.lowercase() }
@@ -64,6 +76,7 @@ object Category {
                     }.associate { it[CategoryTable.name] to it[CategoryTable.id].value }
 
             normalizeCategories(userId)
+            newCategoryIdsByName.forEach { (name, id) -> createdNames[id] = name }
 
             names.map {
                 // creating a category named Default is illegal
@@ -87,20 +100,31 @@ object Category {
         if (categoryId == defaultCategoryId && includeInDownload == null && includeInUpdate == null) {
             return
         }
+        val renamed = categoryId != defaultCategoryId && name != null && !name.equals(DEFAULT_CATEGORY_NAME, ignoreCase = true)
+        val oldName =
+            if (renamed && KarasuRecorder.enabled()) {
+                transaction {
+                    CategoryTable
+                        .select(CategoryTable.name)
+                        .where { CategoryTable.id eq categoryId and (CategoryTable.user eq userId) }
+                        .firstOrNull()
+                        ?.get(CategoryTable.name)
+                }
+            } else {
+                null
+            }
         transaction {
             CategoryTable.update({ CategoryTable.id eq categoryId and (CategoryTable.user eq userId) }) {
-                if (
-                    categoryId != defaultCategoryId &&
-                    name != null &&
-                    !name.equals(DEFAULT_CATEGORY_NAME, ignoreCase = true)
-                ) {
-                    it[CategoryTable.name] = name
+                if (renamed) {
+                    it[CategoryTable.name] = name!!
                 }
                 if (categoryId != defaultCategoryId && isDefault != null) it[CategoryTable.isDefault] = isDefault
                 if (includeInUpdate != null) it[CategoryTable.includeInUpdate] = includeInUpdate
                 if (includeInDownload != null) it[CategoryTable.includeInDownload] = includeInDownload
             }
         }
+        // only a real rename (the category exists and its name changed) is a change worth logging
+        if (oldName != null && name != null && oldName != name) KarasuRecorder.categoryRenamed(categoryId, name)
     }
 
     /**
@@ -166,6 +190,7 @@ object Category {
         categoryId: Int,
     ) {
         if (categoryId == getDefaultCategoryId(userId)) return
+        var existed = false
         transaction {
             val uid =
                 CategoryTable
@@ -176,9 +201,11 @@ object Category {
             CategoryTable.deleteWhere { CategoryTable.id eq categoryId and (CategoryTable.user eq userId) }
             normalizeCategories(userId)
             if (uid != null) {
+                existed = true
                 SyncYomiSyncService.rememberDeletedCategory(userId, uid)
             }
         }
+        if (existed) KarasuRecorder.categoryDeleted(categoryId)
     }
 
     /** make sure category order numbers starts from 1 and is consecutive */

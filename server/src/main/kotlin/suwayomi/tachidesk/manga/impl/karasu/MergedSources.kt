@@ -15,6 +15,10 @@ import eu.kanade.tachiyomi.util.chapter.ChapterRecognition
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -63,6 +67,9 @@ data class MergedGroupDto(
  * - [MergedChapterRouteTable] remembers which source has to be used for the pages of a chapter.
  */
 object MergedSources {
+    // defaults must be written: the contract's MergedSource always carries priority and updatesEnabled
+    private val logJson = Json { encodeDefaults = true }
+
     private val logger = KotlinLogging.logger {}
 
     class ChapterRoute(
@@ -149,6 +156,7 @@ object MergedSources {
                 }.distinctBy { it.first }
                 .sortedBy { it.second.priority }
 
+        val before = if (KarasuRecorder.enabled()) links(mangaId).map(::toDto) else null
         transaction {
             MergedMangaTable.deleteWhere { MergedMangaTable.manga eq mangaId }
             MergedMangaTable.batchInsert(cleaned.withIndex().toList()) { (index, pair) ->
@@ -165,7 +173,18 @@ object MergedSources {
                     (MergedChapterRouteTable.sourceId notInList linkedIds)
             }
         }
-        return getGroup(mangaId)
+        val group = getGroup(mangaId)
+        if (before != null && group != null && before != group.sources) {
+            // the whole list after the change, keyed by the primary manga: the app has no server ids
+            KarasuOperations.record(
+                KarasuEntity.MERGED,
+                KarasuOperations.mergedKey(primarySource, primary[MangaTable.url]),
+                KarasuAction.SET,
+                buildJsonObject { put("sources", logJson.encodeToJsonElement(ListSerializer(MergedSourceDto.serializer()), group.sources)) },
+                skipIfSameAsLast = false,
+            )
+        }
+        return group
     }
 
     private fun chapterIdsOf(mangaId: Int): List<Int> =

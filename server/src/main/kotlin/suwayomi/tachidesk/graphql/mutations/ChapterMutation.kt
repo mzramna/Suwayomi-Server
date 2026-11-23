@@ -25,6 +25,7 @@ import suwayomi.tachidesk.graphql.types.SyncConflictInfoType
 import suwayomi.tachidesk.manga.impl.Chapter
 import suwayomi.tachidesk.manga.impl.Manga
 import suwayomi.tachidesk.manga.impl.chapter.getChapterDownloadReadyById
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.impl.sync.KoreaderSyncService
 import suwayomi.tachidesk.manga.model.table.ChapterMetaTable
 import suwayomi.tachidesk.manga.model.table.ChapterTable
@@ -91,6 +92,8 @@ class ChapterMutation {
                 } else {
                     emptyMap()
                 }
+            val progressBefore =
+                if (patch.isRead != null || patch.lastPageRead != null) KarasuRecorder.progressBefore(userId, ids) else null
             if (patch.isRead != null || patch.isBookmarked != null || patch.lastPageRead != null) {
                 val now = Instant.now().epochSecond
 
@@ -111,6 +114,7 @@ class ChapterMutation {
                     }
                 }
             }
+            KarasuRecorder.progressChanged(userId, progressBefore)
         }
 
         // Sync with KoreaderSync when progress is updated

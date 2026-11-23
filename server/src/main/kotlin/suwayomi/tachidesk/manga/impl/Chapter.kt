@@ -40,6 +40,7 @@ import suwayomi.tachidesk.global.impl.sync.SyncYomiSyncService
 import suwayomi.tachidesk.global.impl.sync.chapterTombstoneKey
 import suwayomi.tachidesk.global.model.table.UserAccountTable
 import suwayomi.tachidesk.manga.impl.download.DownloadManager
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.impl.track.Track
 import suwayomi.tachidesk.manga.impl.util.updateChapterDownloadDir
 import suwayomi.tachidesk.manga.model.dataclass.ChapterDataClass
@@ -560,6 +561,22 @@ object Chapter {
 
                 val chapterIdValue = chapter[ChapterTable.id].value
 
+                val prevChapters =
+                    if (markPrevRead != null && KarasuRecorder.enabled()) {
+                        ChapterTable
+                            .select(ChapterTable.id)
+                            .where { (ChapterTable.manga eq mangaId) and (ChapterTable.sourceOrder less chapterIndex) }
+                            .map { it[ChapterTable.id].value }
+                    } else {
+                        emptyList()
+                    }
+                val progressBefore =
+                    if (isRead != null || lastPageRead != null || markPrevRead != null) {
+                        KarasuRecorder.progressBefore(userId, prevChapters + chapterIdValue)
+                    } else {
+                        null
+                    }
+
                 if (listOf(isRead, isBookmarked, lastPageRead).any { it != null }) {
                     ChapterUserTable.upsert(ChapterUserTable.user, ChapterUserTable.chapter) {
                         it[ChapterUserTable.chapter] = chapterIdValue
@@ -590,6 +607,7 @@ object Chapter {
                         this[ChapterUserTable.isRead] = markPrevRead
                     }
                 }
+                KarasuRecorder.progressChanged(userId, progressBefore)
                 chapterIdValue
             }
 
@@ -691,6 +709,7 @@ object Chapter {
                     .where { condition }
                     .map { it[ChapterTable.id].value }
 
+            val progressBefore = if (isRead != null || lastPageRead != null) KarasuRecorder.progressBefore(userId, chapters) else null
             ChapterUserTable.batchUpsert(chapters, ChapterUserTable.chapter, ChapterUserTable.user) { chapter ->
                 this[ChapterUserTable.user] = userId
                 this[ChapterUserTable.chapter] = chapter
@@ -705,6 +724,7 @@ object Chapter {
                     this[ChapterUserTable.lastReadAt] = now
                 }
             }
+            KarasuRecorder.progressChanged(userId, progressBefore)
         }
 
         if (isRead == true) {

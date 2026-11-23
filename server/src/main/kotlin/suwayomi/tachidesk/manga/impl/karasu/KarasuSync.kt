@@ -8,6 +8,8 @@ package suwayomi.tachidesk.manga.impl.karasu
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -111,6 +113,7 @@ object KarasuSync {
 
     fun setPolicy(policy: String): PolicyDto {
         require(policy in POLICIES) { "downloadPolicy must be one of $POLICIES" }
+        val previous = if (KarasuRecorder.enabled()) getPolicy().downloadPolicy else null
         transaction {
             val updated = KarasuSettingTable.update({ KarasuSettingTable.key eq POLICY_KEY }) { it[value] = policy }
             if (updated == 0) {
@@ -119,6 +122,15 @@ object KarasuSync {
                     it[value] = policy
                 }
             }
+        }
+        if (previous != null && previous != policy) {
+            KarasuOperations.record(
+                KarasuEntity.POLICY,
+                KarasuOperations.POLICY_KEY,
+                KarasuAction.SET,
+                buildJsonObject { put("downloadPolicy", policy) },
+                skipIfSameAsLast = false,
+            )
         }
         return PolicyDto(policy)
     }
@@ -129,6 +141,8 @@ object KarasuSync {
         request: DeletionRequestDto,
     ): QueuedDto {
         val now = System.currentTimeMillis()
+        // decided before anything suspends: the request's device is only known on the handler thread
+        val logged = KarasuRecorder.enabled()
         val rows =
             transaction {
                 (ChapterTable innerJoin MangaTable)
@@ -151,6 +165,18 @@ object KarasuSync {
                 this[KarasuDeletionTable.chapterNumber] = row[3] as Float
                 this[KarasuDeletionTable.requestedAt] = now
             }
+        }
+        if (logged) {
+            KarasuOperations.recordAll(
+                rows.map {
+                    PendingOperation(
+                        KarasuEntity.DELETION,
+                        KarasuOperations.chapterKey("deletion", it[0] as Long, it[1] as String, it[2] as String),
+                        KarasuAction.SET,
+                        buildJsonObject { put("deleteFromServer", request.deleteFromServer) },
+                    )
+                },
+            )
         }
         if (request.deleteFromServer) {
             Chapter.deleteDownloadedChapters(userId, request.chapterIds)
@@ -177,6 +203,7 @@ object KarasuSync {
                     .toSet()
             }
         val valid = entries.filter { it.chapterId in known }
+        val before = if (KarasuRecorder.enabled()) readLastReadAt(userId, valid.map { it.chapterId }) else null
         transaction {
             valid.forEach { entry ->
                 ChapterUserTable.upsert(ChapterUserTable.user, ChapterUserTable.chapter) {
@@ -186,7 +213,64 @@ object KarasuSync {
                 }
             }
         }
+        if (before != null) recordHistory(userId, valid, before)
         return UpdatedDto(valid.size)
+    }
+
+    private fun readLastReadAt(
+        userId: Int,
+        chapterIds: List<Int>,
+    ): Map<Int, Long> =
+        transaction {
+            chapterIds
+                .distinct()
+                .chunked(1000)
+                .flatMap { chunk ->
+                    ChapterUserTable
+                        .select(ChapterUserTable.chapter, ChapterUserTable.lastReadAt)
+                        .where { (ChapterUserTable.user eq userId) and (ChapterUserTable.chapter inList chunk) }
+                        .map { it[ChapterUserTable.chapter].value to it[ChapterUserTable.lastReadAt] }
+                }.toMap()
+        }
+
+    /** Logs HISTORY for the chapters whose last-read time really changed: SET {lastReadAt} or REMOVE (time 0). */
+    private fun recordHistory(
+        userId: Int,
+        entries: List<HistoryEntryDto>,
+        before: Map<Int, Long>,
+    ) {
+        val finalValues = entries.associate { it.chapterId to it.lastReadAt.coerceAtLeast(0) }
+        val changed = finalValues.filter { (id, value) -> value != (before[id] ?: 0L) }
+        if (changed.isEmpty()) return
+        val refs =
+            transaction {
+                changed.keys.chunked(1000).flatMap { chunk ->
+                    (ChapterTable innerJoin MangaTable)
+                        .select(ChapterTable.id, ChapterTable.url, MangaTable.sourceReference, MangaTable.url)
+                        .where { ChapterTable.id inList chunk }
+                        .map {
+                            val key =
+                                KarasuOperations.chapterKey(
+                                    "history",
+                                    it[MangaTable.sourceReference],
+                                    it[MangaTable.url],
+                                    it[ChapterTable.url],
+                                )
+                            it[ChapterTable.id].value to key
+                        }
+                }
+            }
+        KarasuOperations.recordAll(
+            refs.map { (chapterId, key) ->
+                val value = changed.getValue(chapterId)
+                if (value == 0L) {
+                    PendingOperation(KarasuEntity.HISTORY, key, KarasuAction.REMOVE)
+                } else {
+                    PendingOperation(KarasuEntity.HISTORY, key, KarasuAction.SET, buildJsonObject { put("lastReadAt", value) })
+                }
+            },
+            skipIfSameAsLast = false,
+        )
     }
 
     fun listDeletions(afterId: Int): List<DeletionDto> =

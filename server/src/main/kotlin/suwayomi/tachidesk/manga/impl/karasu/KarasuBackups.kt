@@ -8,6 +8,8 @@ package suwayomi.tachidesk.manga.impl.karasu
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import suwayomi.tachidesk.server.ApplicationDirs
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -73,7 +75,18 @@ object KarasuBackups {
         val partial = File(target.path + ".part")
         content.use { Files.copy(it, partial.toPath(), StandardCopyOption.REPLACE_EXISTING) }
         Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        return toInfo(target)
+        return toInfo(target).also {
+            KarasuOperations.record(
+                KarasuEntity.BACKUP,
+                KarasuOperations.backupKey(it.id),
+                KarasuAction.SET,
+                buildJsonObject {
+                    put("device", it.device)
+                    put("sizeBytes", it.sizeBytes)
+                },
+                skipIfSameAsLast = false,
+            )
+        }
     }
 
     /** Resolves an id to a file inside the backup directory only, never outside of it. */
@@ -82,5 +95,11 @@ object KarasuBackups {
         return File(dir(), id).takeIf { it.isFile && it.parentFile == dir() }
     }
 
-    fun delete(id: String): Boolean = find(id)?.delete() ?: false
+    fun delete(id: String): Boolean {
+        val deleted = find(id)?.delete() ?: false
+        if (deleted) {
+            KarasuOperations.record(KarasuEntity.BACKUP, KarasuOperations.backupKey(id), KarasuAction.REMOVE, skipIfSameAsLast = false)
+        }
+        return deleted
+    }
 }
