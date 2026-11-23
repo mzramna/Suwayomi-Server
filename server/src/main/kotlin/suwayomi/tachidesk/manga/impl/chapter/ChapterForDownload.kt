@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import io.github.oshai.kotlinlogging.KLogger
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.reactivecircus.cache4k.Cache
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.jetbrains.exposed.v1.core.ResultRow
@@ -24,6 +25,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.manga.impl.ChapterDownloadHelper
+import suwayomi.tachidesk.manga.impl.karasu.MergedSources
 import suwayomi.tachidesk.manga.impl.util.source.GetSource.getSourceOrStub
 import suwayomi.tachidesk.manga.model.dataclass.ChapterDataClass
 import suwayomi.tachidesk.manga.model.table.ChapterTable
@@ -93,20 +95,41 @@ suspend fun refreshChapterPageList(
     return mutex.withLock {
         val chapterEntry = existingChapterEntry ?: transaction { ChapterTable.selectAll().where { ChapterTable.id eq chapterId }.first() }
         val mangaEntry = transaction { MangaTable.selectAll().where { MangaTable.id eq mangaId }.first() }
-        val source = getSourceOrStub(mangaEntry[MangaTable.sourceReference])
+        val primarySourceId = mangaEntry[MangaTable.sourceReference]
+        val route = MergedSources.routeFor(chapterId)
+        val sChapter =
+            SChapter.create().apply {
+                url = chapterEntry[ChapterTable.url]
+                name = chapterEntry[ChapterTable.name]
+                scanlator = chapterEntry[ChapterTable.scanlator]
+                chapter_number = chapterEntry[ChapterTable.chapter_number]
+                date_upload = chapterEntry[ChapterTable.date_upload]
+                memo = chapterEntry[ChapterTable.memo]
+            }
 
-        val pageList =
-            source
-                .getPageList(
-                    SChapter.create().apply {
-                        url = chapterEntry[ChapterTable.url]
-                        name = chapterEntry[ChapterTable.name]
-                        scanlator = chapterEntry[ChapterTable.scanlator]
-                        chapter_number = chapterEntry[ChapterTable.chapter_number]
-                        date_upload = chapterEntry[ChapterTable.date_upload]
-                        memo = chapterEntry[ChapterTable.memo]
-                    },
-                ).mapIndexed { index, page -> Page(index, page.url, page.imageUrl, page.uri) }
+        // chapters that came from a merged source are always served by that source
+        val pagesSourceId = if (route?.isExtra == true) route.sourceId else primarySourceId
+        val rawPages =
+            try {
+                getSourceOrStub(pagesSourceId).getPageList(sChapter).also {
+                    if (route?.isExtra != true) MergedSources.clearFallbackRoute(chapterId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // main source failed: try the merged sources (reserves included) before giving up
+                if (route?.isExtra == true) throw e
+                val fallback =
+                    MergedSources.fallbackPageList(
+                        mangaId,
+                        mangaEntry[MangaTable.title],
+                        primarySourceId,
+                        chapterEntry[ChapterTable.chapter_number],
+                    ) ?: throw e
+                MergedSources.setRoute(chapterId, fallback.first, isExtra = false)
+                fallback.second
+            }
+        val pageList = rawPages.mapIndexed { index, page -> Page(index, page.url, page.imageUrl, page.uri) }
 
         transaction {
             ChapterTable.update({ ChapterTable.id eq chapterId }) {

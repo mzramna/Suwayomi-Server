@@ -20,6 +20,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.graphql.types.DownloadConversion
+import suwayomi.tachidesk.manga.impl.karasu.MergedSources
 import suwayomi.tachidesk.manga.impl.util.getChapterCachePath
 import suwayomi.tachidesk.manga.impl.util.source.GetSource.getSourceOrNull
 import suwayomi.tachidesk.manga.impl.util.storage.ImageResponse.getImageResponse
@@ -120,7 +121,9 @@ object Page {
             return imageFile.inputStream() to (ImageUtil.findImageType { imageFile.inputStream() }?.mime ?: "image/jpeg")
         }
 
-        val source = getSourceOrNull(mangaEntry[MangaTable.sourceReference])!!
+        // a merged source may be the one that has to serve this chapter's pages
+        val pagesSourceId = MergedSources.routeFor(chapterId)?.sourceId ?: mangaEntry[MangaTable.sourceReference]
+        val source = getSourceOrNull(pagesSourceId)!!
         source as HttpSource
 
         if (pageEntry[PageTable.imageUrl] == null) {

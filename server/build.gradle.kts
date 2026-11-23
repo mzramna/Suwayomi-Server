@@ -117,6 +117,11 @@ jte {
     generate()
 }
 
+// Fork support: bundle a different WebUI build (e.g. mzramna/Suwayomi-WebUI) without touching buildSrc.
+//   ./gradlew :server:downloadWebUI -PwebuiZipUrl=https://github.com/mzramna/Suwayomi-WebUI/releases/download/rNNN/webui.zip -PwebuiRevisionTag=rNNN
+val webUIZipUrlOverride: String? = providers.gradleProperty("webuiZipUrl").orNull
+val effectiveWebUITag: String = providers.gradleProperty("webuiRevisionTag").orNull ?: webUIRevisionTag
+
 application {
     applicationDefaultJvmArgs =
         listOf(
@@ -156,7 +161,7 @@ buildConfig {
     buildConfigField("String", "BUILD_TYPE", quoteWrap(if (System.getenv("ProductBuildType") == "Stable") "Stable" else "Preview"))
     buildConfigField("long", "BUILD_TIME", Instant.now().epochSecond.toString())
 
-    buildConfigField("String", "WEBUI_TAG", quoteWrap(webUIRevisionTag))
+    buildConfigField("String", "WEBUI_TAG", quoteWrap(effectiveWebUITag))
 
     buildConfigField("String", "GITHUB", quoteWrap("https://github.com/Suwayomi/Suwayomi-Server"))
     buildConfigField("String", "DISCORD", quoteWrap("https://discord.gg/DDZdqZWaHA"))
@@ -241,7 +246,10 @@ tasks {
     }
 
     register<Download>("downloadWebUI") {
-        src("https://github.com/Suwayomi/Suwayomi-WebUI-preview/releases/download/$webUIRevisionTag/Suwayomi-WebUI-$webUIRevisionTag.zip")
+        src(
+            webUIZipUrlOverride
+                ?: "https://github.com/Suwayomi/Suwayomi-WebUI-preview/releases/download/$webUIRevisionTag/Suwayomi-WebUI-$webUIRevisionTag.zip",
+        )
         dest("src/main/resources/WebUI.zip")
 
         fun shouldOverwrite(): Boolean {
@@ -255,7 +263,7 @@ tasks {
                         it.readText().trim()
                     }
 
-                if (zipRevision == webUIRevisionTag) {
+                if (zipRevision == effectiveWebUITag && webUIZipUrlOverride == null) {
                     shouldOverwrite = false
                 }
             }

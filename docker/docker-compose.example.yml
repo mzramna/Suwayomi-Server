@@ -1,0 +1,49 @@
+# Exemplo: Suwayomi-Server (fork mzramna) + PostgreSQL, downloads em NFS ou local.
+# Copie para docker-compose.yml e ajuste. Para H2 (banco local embutido) remova o serviço postgres
+# e as variáveis DATABASE_*.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: suwayomi
+      POSTGRES_USER: suwayomi
+      POSTGRES_PASSWORD: troque-esta-senha
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  suwayomi:
+    image: ghcr.io/mzramna/suwayomi-server:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "4567:4567"
+    environment:
+      TZ: America/Sao_Paulo
+      # --- banco: h2 (local, padrão) | postgres ---
+      DATABASE_TYPE: postgres
+      DATABASE_URL: jdbc:postgresql://postgres:5432/suwayomi
+      DATABASE_USERNAME: suwayomi
+      DATABASE_PASSWORD: troque-esta-senha
+      # --- armazenamento: deixe NFS_TARGET vazio para usar o volume local ---
+      NFS_TARGET: "192.168.1.50:/volume1/mangas"
+      NFS_OPTIONS: "rw,noatime,tcp"
+      # NFS_FALLBACK_LOCAL: "true"     # em vez de encerrar, cai para o disco local se o NFS falhar
+      # --- opções extras do servidor: SUWAYOMI_OPT_<nome> ---
+      SUWAYOMI_OPT_downloadAsCbz: "true"   # o Karasu baixa o CBZ direto do servidor
+    # necessário para o mount NFS dentro do container. Alternativa sem privilégios: monte o NFS no
+    # host (ou use um volume Docker com driver local/nfs) e deixe NFS_TARGET vazio.
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      - suwayomi-config:/data/config
+      - suwayomi-backups:/data/backups
+      # sem NFS_TARGET, o volume abaixo guarda os downloads localmente:
+      - suwayomi-downloads:/data/downloads
+
+volumes:
+  pgdata:
+  suwayomi-config:
+  suwayomi-backups:
+  suwayomi-downloads:

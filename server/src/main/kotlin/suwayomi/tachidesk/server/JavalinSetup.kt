@@ -42,6 +42,7 @@ import suwayomi.tachidesk.graphql.GraphQL
 import suwayomi.tachidesk.graphql.types.AuthMode
 import suwayomi.tachidesk.i18n.LocalizationHelper
 import suwayomi.tachidesk.i18n.MR
+import suwayomi.tachidesk.manga.KarasuAPI
 import suwayomi.tachidesk.manga.MangaAPI
 import suwayomi.tachidesk.manga.impl.util.network.isHostUnreachable
 import suwayomi.tachidesk.opds.OpdsAPI
@@ -138,6 +139,7 @@ object JavalinSetup {
                         path("v1/") {
                             GlobalAPI.defineEndpoints()
                             MangaAPI.defineEndpoints()
+                            KarasuAPI.defineEndpoints()
                         }
 
                         OpdsAPI.defineEndpoints()

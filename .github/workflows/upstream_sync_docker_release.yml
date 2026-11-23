@@ -1,0 +1,128 @@
+name: Upstream sync + Docker release (fork)
+
+# Sincroniza com Suwayomi/Suwayomi-Server, compila o JAR e publica a imagem multi-arch no GHCR:
+#   ghcr.io/<dono-do-fork>/suwayomi-server:latest
+on:
+  schedule:
+    - cron: "17 5 * * 1" # segundas, 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      sync_upstream:
+        description: "Mesclar Suwayomi/Suwayomi-Server (upstream) antes de compilar"
+        type: boolean
+        default: true
+      webui_release:
+        description: "Tag do release do fork da WebUI a embutir (vazio = último release; 'upstream' = WebUI oficial)"
+        type: string
+        default: ""
+  push:
+    branches: [master]
+    paths:
+      - "server/**"
+      - "docker/**"
+      - "AndroidCompat/**"
+      - "buildSrc/**"
+      - ".github/workflows/upstream_sync_docker_release.yml"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: docker-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/Suwayomi/Suwayomi-Server.git
+  WEBUI_FORK: ${{ github.repository_owner }}/Suwayomi-WebUI
+
+jobs:
+  build:
+    # só roda no fork, nunca em cópia do repositório oficial
+    if: github.repository_owner != 'Suwayomi'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mesclar upstream (sem force-push)
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sync_upstream)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
+          git fetch upstream master
+          if ! git merge --no-edit upstream/master; then
+            echo "::error::Conflito ao mesclar o upstream. Resolva localmente e faça push; nada foi enviado."
+            git merge --abort
+            exit 1
+          fi
+          git push origin HEAD:${{ github.ref_name }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Descobrir a WebUI do fork
+        id: webui
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBUI_RELEASE: ${{ inputs.webui_release }}
+        run: |
+          set -euo pipefail
+          if [ "$WEBUI_RELEASE" = "upstream" ]; then
+            echo "Usando a WebUI oficial embutida pelo build padrão."
+            exit 0
+          fi
+          if [ -n "$WEBUI_RELEASE" ]; then
+            tag="$WEBUI_RELEASE"
+          else
+            tag="$(gh release view --repo "$WEBUI_FORK" --json tagName -q .tagName 2>/dev/null || true)"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::warning::Nenhum release de $WEBUI_FORK encontrado; usando a WebUI oficial."
+            exit 0
+          fi
+          echo "url=https://github.com/$WEBUI_FORK/releases/download/$tag/webui.zip" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar o JAR
+        run: |
+          args=()
+          if [ -n "${{ steps.webui.outputs.url }}" ]; then
+            args+=("-PwebuiZipUrl=${{ steps.webui.outputs.url }}" "-PwebuiRevisionTag=${{ steps.webui.outputs.tag }}")
+          fi
+          ./gradlew :server:downloadWebUI "${args[@]}" --no-daemon
+          ./gradlew :server:shadowJar "${args[@]}" --no-daemon
+          mkdir -p docker
+          cp server/build/Suwayomi-Server-*.jar docker/app.jar
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nome da imagem em minúsculas
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/suwayomi-server" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

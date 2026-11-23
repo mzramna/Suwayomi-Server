@@ -43,6 +43,7 @@ import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.manga.impl.download.fileProvider.impl.MissingThumbnailException
+import suwayomi.tachidesk.manga.impl.karasu.MergedSources
 import suwayomi.tachidesk.manga.impl.util.network.await
 import suwayomi.tachidesk.manga.impl.util.network.isHostUnreachable
 import suwayomi.tachidesk.manga.impl.util.source.GetSource.getSourceOrNull
@@ -186,7 +187,10 @@ object Manga {
                     }
             }
             if (updateChapters) {
-                Chapter.updateChapterListDatabase(mangaEntry, mangaUpdate.chapters, source)
+                val aggregated =
+                    MergedSources.aggregate(mangaId, mangaEntry[MangaTable.title], mangaUpdate.chapters)
+                Chapter.updateChapterListDatabase(mangaEntry, aggregated.chapters, source)
+                MergedSources.recordExtraRoutes(mangaId, aggregated.extraUrlToSource)
             }
         }
     }
