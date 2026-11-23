@@ -1,0 +1,99 @@
+name: CI Contract
+
+# Bateria de contrato HTTP do pipeline do back (Karasu app + WebUI): compila o JAR, sobe o servidor de verdade
+# (H2 e PostgreSQL), semeia obras/capítulos e roda clientes roteirizados que fazem as mesmas requisições do app e da
+# WebUI, conferindo o estado e o log de operações (scripts/contract/run.sh; testes em
+# server/src/test/kotlin/suwayomi/tachidesk/contract).
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  contract:
+    name: Contract (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [H2, POSTGRESQL]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.ref_name != github.event.repository.default_branch }}
+
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      # A WebUI embutida não é necessária: o servidor sobe com webUIEnabled=false.
+      - name: Build the server jar
+        run: ./gradlew :server:shadowJar --stacktrace
+
+      - name: Run the contract battery
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          KEEP_LOG: ${{ runner.temp }}/contract-server.log
+        run: |
+          jar="$(ls server/build/Suwayomi-Server-*.jar | head -n 1)"
+          export SERVER_JAR="$PWD/$jar"
+          if [ "${{ matrix.database }}" = "POSTGRESQL" ]; then
+            scripts/contract/run.sh postgres
+          else
+            scripts/contract/run.sh h2
+          fi
+
+      - name: Publish contract report
+        uses: mikepenz/action-junit-report@v6
+        if: success() || failure()
+        with:
+          check_name: Contract report (${{ matrix.database }})
+          report_paths: "server/build/test-results/test/TEST-suwayomi.tachidesk.contract.*.xml"
+
+      - name: Upload contract results
+        uses: actions/upload-artifact@v7
+        if: success() || failure()
+        with:
+          name: contract-${{ matrix.database }}
+          path: |
+            server/build/reports/tests
+            server/build/test-results/test/TEST-suwayomi.tachidesk.contract.*.xml
+            ${{ runner.temp }}/contract-server.log
+          if-no-files-found: ignore

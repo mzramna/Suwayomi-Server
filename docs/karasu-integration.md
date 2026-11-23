@@ -9,7 +9,9 @@ trabalharem juntos. O servidor é passivo: o Karasu é quem inicia toda sincroni
 | --- | --- |
 | API REST `/api/v1/karasu/*` (contrato abaixo) | `manga/KarasuAPI.kt`, `manga/controller/KarasuController.kt`, `manga/impl/karasu/*` |
 | Fontes mescladas (agregação + reserva) | `manga/impl/karasu/MergedSources.kt`, ganchos em `Manga.updateMangaAndChapters`, `ChapterForDownload.refreshChapterPageList` e `Page.getPageImage` |
-| Tabelas novas (migração `M0069_KarasuSync`) | `MergedManga`, `MergedChapterRoute`, `KarasuDeletion`, `KarasuSetting` |
+| Tabelas novas (migrações `M0069_KarasuSync`, `M0070_KarasuOperations`) | `MergedManga`, `MergedChapterRoute`, `KarasuDeletion`, `KarasuSetting`, `KarasuOperation` |
+| Log de operações (contrato v2, abaixo) | `manga/impl/karasu/KarasuOperations.kt`, `KarasuRecorder.kt`, `KarasuRequestContext.kt` |
+| Bateria de contrato HTTP (app + WebUI roteirizados) | `scripts/contract/run.sh`, `server/src/test/kotlin/suwayomi/tachidesk/contract`, `.github/workflows/ci_contract.yml` |
 | Docker multi-arch (NFS opcional, H2/PostgreSQL) | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/docker-compose.example.yml` |
 | CI: sincroniza o upstream, compila e publica no GHCR | `.github/workflows/upstream_sync_docker_release.yml` |
 | Embutir a WebUI do fork no JAR | `-PwebuiZipUrl=... -PwebuiRevisionTag=...` em `:server:downloadWebUI` |
@@ -98,3 +100,45 @@ grava como "agora" ao mudar `lastPageRead`). Ids inexistentes são ignorados. A 
 
 ## Fora do contrato (GraphQL nativo do Suwayomi, já existe)
 Categorias, progresso de leitura (isRead/lastPageRead), extensões instaladas: o Karasu usa `POST {server}/api/graphql` com queries escritas à mão (OkHttp + kotlinx.serialization), baseadas em `Suwayomi-Bunko/data/src/main/graphql/*.graphql`.
+
+---
+
+# Log de operações (contrato v2)
+
+O servidor mantém um log de "quem mudou o quê e quando" para que o app resolva **conflitos reais** (a mesma chave mudou nos
+dois lados desde a última sincronização) pelo horário da ação. É registro, não comando: nada é reaplicado a partir dele.
+Tabela `KarasuOperation` (`seq` autoincremento atribuído pelo servidor, `op_id` único, `device_id`, `ts` em ms UTC, `entity`,
+chave, `action`, valor JSON, `received_at`); retenção de 90 dias (poda na subida do servidor, por `received_at`).
+
+* `POST /operations` `{"operations":[Operation]}` → `{"accepted":n,"duplicates":m}`; idempotente por `id`; valida `entity`/`action`
+  (400 sem gravar nada); máximo de 10000 por requisição. Guarda `deviceId` e `ts` como o app mandou.
+* `GET /operations?afterSeq=0&entity=&limit=1000` → `{"operations":[...+seq],"lastSeq":n,"serverTime":ms}` ordenado por `seq`;
+  `limit` máx. 5000 (acima disso é reduzido); `lastSeq` = `seq` da última operação devolvida, ou o próprio `afterSeq` se não há nada novo.
+* Entidades e chaves: ver a tabela do contrato (`category:<id>`, `link:<sourceId>|<mangaUrl>|<categoryId>`,
+  `progress:`/`history:`/`deletion:<sourceId>|<mangaUrl>|<chapterUrl>`, `merged:<sourceId>|<mangaUrl>`, `policy`, `backup:<id>`).
+  `sourceId` é a fonte da obra como string; `merged:` usa a obra primária.
+
+## Quem registra: o header `X-Karasu-Device`
+
+* **Com** `X-Karasu-Device` (app Karasu, REST e GraphQL): o servidor **não** grava operação automática para as mudanças daquela
+  requisição. O app publica o próprio log (`POST /operations`) com o `ts` real da ação do usuário; se o servidor gravasse também,
+  o `ts` seria o da sincronização (horas depois) e quebraria a resolução por horário.
+* **Sem** o header (WebUI, scripts): o servidor grava sozinho, com `deviceId = "web"` e `ts` = agora, **só mudanças efetivas**
+  (valor diferente do anterior; no-op não registra). Pontos instrumentados: criar/renomear/apagar categoria
+  (`createCategory`/`updateCategory(s)`/`deleteCategory` e os equivalentes REST), vínculo obra↔categoria
+  (`updateManga(s)Categories` e REST), `isRead`/`lastPageRead` de capítulo (`updateChapter(s)` e REST), e as rotas
+  `PUT /history`, `PUT /merged`, `PUT /manga/{id}/merged`, `PUT /policy`, `POST /deletions`, upload/exclusão de backup.
+  Apagar uma categoria não gera `REMOVE` dos vínculos dela (o app vê pelo `REMOVE` da categoria). `bookmark` não é progresso.
+
+Como o header chega às mutações: um handler `before` do Javalin lê o header (e um `after` limpa); o contexto GraphQL carrega
+`Attribute.KarasuDevice` e o wrapper de `@RequireAuth` publica o valor para o resolver síncrono que está executando
+(`KarasuRequestContext`, um `ThreadLocal` só dentro desse trecho; código que troca de thread deve ler o dispositivo antes e passar
+`deviceId` explícito a `KarasuOperations.record`).
+
+## Testes de contrato HTTP
+
+`scripts/contract/run.sh h2|postgres` (precisa de `SERVER_JAR`) sobe o JAR, semeia obras/capítulos (`scripts/contract/seed.py`) e
+roda `suwayomi.tachidesk.contract.*` (`-PcontractUrl=http://127.0.0.1:PORT -PcontractUser= -PcontractPass=`; sem `contractUrl`
+os testes são ignorados). Dois clientes roteirizados — "app" (com `X-Karasu-Device`) e "web" (sem) — fazem as chamadas
+REST e as consultas/mutações GraphQL do app e conferem o estado e o log (entity/key/action/value/deviceId/ts, sem duplicar).
+No CI: `.github/workflows/ci_contract.yml` (H2 e PostgreSQL).

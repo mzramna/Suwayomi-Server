@@ -242,7 +242,7 @@ object KarasuSync {
         val finalValues = entries.associate { it.chapterId to it.lastReadAt.coerceAtLeast(0) }
         val changed = finalValues.filter { (id, value) -> value != (before[id] ?: 0L) }
         if (changed.isEmpty()) return
-        val refs =
+        val keys =
             transaction {
                 changed.keys.chunked(1000).flatMap { chunk ->
                     (ChapterTable innerJoin MangaTable)
@@ -259,10 +259,11 @@ object KarasuSync {
                             it[ChapterTable.id].value to key
                         }
                 }
-            }
+            }.toMap()
+        // in the order the entries came, so the log reads like the request
         KarasuOperations.recordAll(
-            refs.map { (chapterId, key) ->
-                val value = changed.getValue(chapterId)
+            changed.mapNotNull { (chapterId, value) ->
+                val key = keys[chapterId] ?: return@mapNotNull null
                 if (value == 0L) {
                     PendingOperation(KarasuEntity.HISTORY, key, KarasuAction.REMOVE)
                 } else {

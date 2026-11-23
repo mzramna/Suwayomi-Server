@@ -156,20 +156,22 @@ object KarasuRecorder {
                         .select(ChapterTable.id, ChapterTable.url, MangaTable.sourceReference, MangaTable.url)
                         .where { ChapterTable.id inList chunk }
                         .map {
-                            Triple(
-                                it[ChapterTable.id].value,
-                                it[MangaTable.sourceReference],
-                                it[MangaTable.url] to it[ChapterTable.url],
-                            )
+                            it[ChapterTable.id].value to
+                                Triple(
+                                    it[MangaTable.sourceReference],
+                                    it[MangaTable.url],
+                                    it[ChapterTable.url],
+                                )
                         }
                 }
-            }
+            }.toMap()
+        // in the order the chapters were given, so the log reads like the request
         val operations =
-            refs.map { (chapterId, sourceId, urls) ->
-                val progress = changed.getValue(chapterId)
+            changed.mapNotNull { (chapterId, progress) ->
+                val (sourceId, mangaUrl, chapterUrl) = refs[chapterId] ?: return@mapNotNull null
                 PendingOperation(
                     KarasuEntity.PROGRESS,
-                    KarasuOperations.chapterKey("progress", sourceId, urls.first, urls.second),
+                    KarasuOperations.chapterKey("progress", sourceId, mangaUrl, chapterUrl),
                     KarasuAction.SET,
                     progressValue(progress),
                 )

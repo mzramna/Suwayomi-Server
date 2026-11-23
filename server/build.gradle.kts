@@ -230,6 +230,10 @@ tasks {
                 systemProperty("suwayomi.tachidesk.config.server.$configProp", it)
             }
         }
+        // HTTP contract tests against an already running server (scripts/contract/run.sh); skipped without contractUrl
+        listOf("contractUrl", "contractUser", "contractPass").forEach { prop ->
+            project.findProperty(prop)?.let { systemProperty(prop, it) }
+        }
     }
 
     withType<KotlinJvmCompile> {

@@ -180,7 +180,12 @@ object MergedSources {
                 KarasuEntity.MERGED,
                 KarasuOperations.mergedKey(primarySource, primary[MangaTable.url]),
                 KarasuAction.SET,
-                buildJsonObject { put("sources", logJson.encodeToJsonElement(ListSerializer(MergedSourceDto.serializer()), group.sources)) },
+                buildJsonObject {
+                    put(
+                        "sources",
+                        logJson.encodeToJsonElement(ListSerializer(MergedSourceDto.serializer()), group.sources),
+                    )
+                },
                 skipIfSameAsLast = false,
             )
         }
