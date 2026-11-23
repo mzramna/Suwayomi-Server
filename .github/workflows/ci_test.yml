@@ -1,6 +1,7 @@
 name: CI Test
 
 # Testes unitários/integração do servidor, em H2 (embutido) e PostgreSQL.
+# O CefTest fica de fora (ver .github/runner-files/exclude-cef-test.init.gradle).
 on:
   push:
     branches: ["**"]
@@ -60,14 +61,15 @@ jobs:
 
       - name: Run tests
         run: |
+          INIT="-I .github/runner-files/exclude-cef-test.init.gradle"
           if [ "${{ matrix.database }}" = "POSTGRESQL" ]; then
-            ./gradlew test --stacktrace \
+            ./gradlew test $INIT --stacktrace \
               -PtestDatabaseType=POSTGRESQL \
               -PtestDatabaseUrl=postgresql://localhost:5432/postgres \
               -PtestDatabaseUsername=postgres \
               -PtestDatabasePassword=postgres
           else
-            ./gradlew test --stacktrace
+            ./gradlew test $INIT --stacktrace
           fi
 
       - name: Publish test report

@@ -1,0 +1,10 @@
+// CI do fork: CefTest baixa o JBR pela API do GitHub *sem autenticação* (api.github.com/repos/JetBrains/...),
+// que tem limite de 60 req/h por IP e costuma estar esgotado nos runners compartilhados (HTTP 403).
+// O teste valida o download do JBR, não o código do servidor, então não entra neste CI.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            excludeTestsMatching 'suwayomi.tachidesk.CefTest'
+        }
+    }
+}
