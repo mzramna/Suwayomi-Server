@@ -1,0 +1,101 @@
+name: CI Build
+
+# Compila o servidor (lint + JAR) e faz um "smoke test": sobe o JAR por 30 s, o que executa todas as
+# migrações (incluindo a M0069 do fork) em H2 e em PostgreSQL. Os testes ficam em ci_test.yml.
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [H2, POSTGRESQL]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v5
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.ref_name != github.event.repository.default_branch }}
+
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      - name: Lint and build the JAR
+        run: ./gradlew ktlintCheck :server:shadowJar --stacktrace
+
+      - name: Smoke test (starts the JAR and runs the migrations)
+        run: |
+          JAR=$(ls ./server/build/*.jar | head -1)
+          DB_FLAGS=()
+          if [ "${{ matrix.database }}" = "POSTGRESQL" ]; then
+            DB_FLAGS=(
+              -Dsuwayomi.tachidesk.config.server.databaseType=POSTGRESQL
+              -Dsuwayomi.tachidesk.config.server.databaseUrl=postgresql://localhost:5432/postgres
+              -Dsuwayomi.tachidesk.config.server.databaseUsername=postgres
+              -Dsuwayomi.tachidesk.config.server.databasePassword=postgres
+            )
+          fi
+          set +e
+          timeout 40s java \
+            -Dsuwayomi.tachidesk.config.server.rootDir="$RUNNER_TEMP/suwayomi" \
+            -Dsuwayomi.tachidesk.config.server.systemTrayEnabled=false \
+            -Dsuwayomi.tachidesk.config.server.initialOpenInBrowserEnabled=false \
+            -Dsuwayomi.tachidesk.config.server.webUIEnabled=false \
+            "${DB_FLAGS[@]}" \
+            -jar "$JAR" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          ecode="${PIPESTATUS[0]}"
+          # 124 = o timeout encerrou um servidor que estava de pé (esperado)
+          if [ "$ecode" -ne 124 ] && [ "$ecode" -ne 125 ]; then
+            echo "::error::O servidor encerrou sozinho com código $ecode"
+            exit "$ecode"
+          fi
+          grep -q "Server is available at" "$RUNNER_TEMP/smoke.log" || { echo "::error::O servidor não chegou a subir"; exit 1; }
+
+      - name: Upload JAR
+        if: matrix.database == 'H2'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Suwayomi-Server-${{ github.sha }}
+          path: server/build/*.jar
+          if-no-files-found: error

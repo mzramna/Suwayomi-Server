@@ -1,0 +1,87 @@
+name: CI Test
+
+# Testes unitários/integração do servidor, em H2 (embutido) e PostgreSQL.
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    name: Test (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [H2, POSTGRESQL]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.ref_name != github.event.repository.default_branch }}
+
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      - name: Run tests
+        run: |
+          if [ "${{ matrix.database }}" = "POSTGRESQL" ]; then
+            ./gradlew test --stacktrace \
+              -PtestDatabaseType=POSTGRESQL \
+              -PtestDatabaseUrl=postgresql://localhost:5432/postgres \
+              -PtestDatabaseUsername=postgres \
+              -PtestDatabasePassword=postgres
+          else
+            ./gradlew test --stacktrace
+          fi
+
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v6
+        if: success() || failure()
+        with:
+          check_name: Test report (${{ matrix.database }})
+          report_paths: "**/build/test-results/test/TEST-*.xml"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: test-results-${{ matrix.database }}
+          path: |
+            AndroidCompat/build/reports/tests
+            server/build/reports/tests
