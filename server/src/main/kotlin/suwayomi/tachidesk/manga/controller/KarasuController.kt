@@ -19,6 +19,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import suwayomi.tachidesk.manga.impl.ChapterDownloadHelper
 import suwayomi.tachidesk.manga.impl.karasu.DeletionRequestDto
+import suwayomi.tachidesk.manga.impl.karasu.HistoryRequestDto
 import suwayomi.tachidesk.manga.impl.karasu.KarasuBackups
 import suwayomi.tachidesk.manga.impl.karasu.KarasuHealth
 import suwayomi.tachidesk.manga.impl.karasu.KarasuSync
@@ -233,6 +234,12 @@ object KarasuController {
         val userId = ctx.user()
         val body = ctx.readBody<DeletionRequestDto>() ?: return
         ctx.respond(KarasuSync.requestDeletions(userId, body))
+    }
+
+    fun historyPut(ctx: Context) {
+        val userId = ctx.user()
+        val body = ctx.readBody<HistoryRequestDto>() ?: return
+        ctx.respond(KarasuSync.setHistory(userId, body.entries))
     }
 
     fun deletionsGet(ctx: Context) {

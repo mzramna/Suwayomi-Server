@@ -39,6 +39,8 @@ object KarasuAPI {
             get("policy", KarasuController::policyGet)
             put("policy", KarasuController::policyPut)
 
+            put("history", KarasuController::historyPut)
+
             post("deletions", KarasuController::deletionsPost)
             get("deletions", KarasuController::deletionsGet)
         }

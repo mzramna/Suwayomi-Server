@@ -8,12 +8,15 @@ package suwayomi.tachidesk.manga.impl.karasu
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
 import suwayomi.tachidesk.manga.model.table.ChapterTable
+import suwayomi.tachidesk.manga.model.table.ChapterUserTable
 import suwayomi.tachidesk.manga.model.table.KarasuDeletionTable
 import suwayomi.tachidesk.manga.model.table.KarasuSettingTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
@@ -135,6 +138,41 @@ class KarasuSyncTest : ApplicationTest() {
         assertTrue(all.zipWithNext().all { (a, b) -> a.id < b.id })
         assertEquals(listOf(all.last().id), KarasuSync.listDeletions(all.first().id).map { it.id })
         assertTrue(KarasuSync.listDeletions(all.last().id).isEmpty())
+    }
+
+    @Test
+    fun `history is set and removed by chapter id, in seconds, and unknown chapters are ignored`() {
+        val mangaId = createLibraryManga("Hist")
+        createChapters(mangaId, 2, false)
+        val ids = transaction { ChapterTable.selectAll().map { it[ChapterTable.id].value }.sorted() }
+
+        fun lastReadAt(chapterId: Int): Long? =
+            transaction {
+                ChapterUserTable
+                    .selectAll()
+                    .where { (ChapterUserTable.chapter eq chapterId) and (ChapterUserTable.user eq 1) }
+                    .firstOrNull()
+                    ?.get(ChapterUserTable.lastReadAt)
+            }
+
+        val updated =
+            KarasuSync.setHistory(
+                1,
+                listOf(HistoryEntryDto(ids[0], 1_700_000_000), HistoryEntryDto(ids[1], 1_700_000_100), HistoryEntryDto(999_999, 5)),
+            )
+        assertEquals(2, updated.updated)
+        assertEquals(1_700_000_000L, lastReadAt(ids[0]))
+        assertEquals(1_700_000_100L, lastReadAt(ids[1]))
+
+        // 0 takes a chapter out of the history; the other one is untouched
+        KarasuSync.setHistory(1, listOf(HistoryEntryDto(ids[0], 0)))
+        assertEquals(0L, lastReadAt(ids[0]))
+        assertEquals(1_700_000_100L, lastReadAt(ids[1]))
+
+        // a negative time is not a time
+        KarasuSync.setHistory(1, listOf(HistoryEntryDto(ids[1], -5)))
+        assertEquals(0L, lastReadAt(ids[1]))
+        assertEquals(0, KarasuSync.setHistory(1, emptyList()).updated)
     }
 
     @Test

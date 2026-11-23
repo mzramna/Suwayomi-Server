@@ -91,5 +91,10 @@ Semântica no servidor: capítulos agregados e deduplicados por chapterNumber re
 `POST /deletions` body `{"chapterIds":[1,2],"deleteFromServer":true}` → 200 `{"queued":2}` (registra um "túmulo" por capítulo; deleteFromServer apaga também o arquivo no servidor)
 `GET /deletions?afterId=0` → `[{"id":5,"sourceId":"1","mangaUrl":"/m","chapterUrl":"/c","chapterNumber":3.0,"requestedAt":1700000000000}]` ordenado por id. O Karasu guarda o último id visto e apaga localmente.
 
+## Histórico
+`PUT /history` body `{"entries":[{"chapterId":1,"lastReadAt":1700000000}]}` → 200 `{"updated":1}`.
+`lastReadAt` em **segundos** (epoch); `0` remove o capítulo do histórico. É a única API que escreve esse valor (o GraphQL só o
+grava como "agora" ao mudar `lastPageRead`). Ids inexistentes são ignorados. A leitura é pelo GraphQL (`chapter.lastReadAt`).
+
 ## Fora do contrato (GraphQL nativo do Suwayomi, já existe)
 Categorias, progresso de leitura (isRead/lastPageRead), extensões instaladas: o Karasu usa `POST {server}/api/graphql` com queries escritas à mão (OkHttp + kotlinx.serialization), baseadas em `Suwayomi-Bunko/data/src/main/graphql/*.graphql`.

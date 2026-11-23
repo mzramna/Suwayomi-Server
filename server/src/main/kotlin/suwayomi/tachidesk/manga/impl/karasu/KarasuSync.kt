@@ -15,12 +15,15 @@ import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
+import org.jetbrains.exposed.v1.jdbc.upsert
 import suwayomi.tachidesk.manga.impl.Chapter
 import suwayomi.tachidesk.manga.impl.ChapterDownloadHelper
 import suwayomi.tachidesk.manga.model.table.ChapterTable
+import suwayomi.tachidesk.manga.model.table.ChapterUserTable
 import suwayomi.tachidesk.manga.model.table.KarasuDeletionTable
 import suwayomi.tachidesk.manga.model.table.KarasuSettingTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
@@ -39,6 +42,23 @@ data class DeletionRequestDto(
 @Serializable
 data class QueuedDto(
     val queued: Int,
+)
+
+@Serializable
+data class HistoryEntryDto(
+    val chapterId: Int,
+    /** Epoch seconds of the last read; 0 removes the chapter from the history. */
+    val lastReadAt: Long,
+)
+
+@Serializable
+data class HistoryRequestDto(
+    val entries: List<HistoryEntryDto> = emptyList(),
+)
+
+@Serializable
+data class UpdatedDto(
+    val updated: Int,
 )
 
 @Serializable
@@ -136,6 +156,37 @@ object KarasuSync {
             Chapter.deleteDownloadedChapters(userId, request.chapterIds)
         }
         return QueuedDto(rows.size)
+    }
+
+    /**
+     * Sets the "last read" time that makes a chapter show up in the history, which no other API can do
+     * (it is only ever written as "now" when the read page changes). 0 takes the chapter out of it.
+     * Chapters that do not exist are ignored.
+     */
+    fun setHistory(
+        userId: Int,
+        entries: List<HistoryEntryDto>,
+    ): UpdatedDto {
+        if (entries.isEmpty()) return UpdatedDto(0)
+        val known =
+            transaction {
+                ChapterTable
+                    .select(ChapterTable.id)
+                    .where { ChapterTable.id inList entries.map { it.chapterId } }
+                    .map { it[ChapterTable.id].value }
+                    .toSet()
+            }
+        val valid = entries.filter { it.chapterId in known }
+        transaction {
+            valid.forEach { entry ->
+                ChapterUserTable.upsert(ChapterUserTable.user, ChapterUserTable.chapter) {
+                    it[ChapterUserTable.user] = userId
+                    it[ChapterUserTable.chapter] = entry.chapterId
+                    it[ChapterUserTable.lastReadAt] = entry.lastReadAt.coerceAtLeast(0)
+                }
+            }
+        }
+        return UpdatedDto(valid.size)
     }
 
     fun listDeletions(afterId: Int): List<DeletionDto> =
