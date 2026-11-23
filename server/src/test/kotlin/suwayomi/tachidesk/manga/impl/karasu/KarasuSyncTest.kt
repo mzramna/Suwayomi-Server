@@ -19,6 +19,7 @@ import suwayomi.tachidesk.manga.model.table.KarasuSettingTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
 import suwayomi.tachidesk.manga.model.table.MergedChapterRouteTable
 import suwayomi.tachidesk.manga.model.table.MergedMangaTable
+import suwayomi.tachidesk.server.serverConfig
 import suwayomi.tachidesk.test.ApplicationTest
 import suwayomi.tachidesk.test.clearTables
 import suwayomi.tachidesk.test.createChapters
@@ -184,7 +185,8 @@ class KarasuSyncTest : ApplicationTest() {
         val health = KarasuHealth.get()
         assertEquals("ok", health.status)
         assertEquals(KarasuHealth.API_VERSION, health.apiVersion)
-        assertEquals("H2", health.database.type)
+        // the suite runs on H2 and on PostgreSQL (CI matrix), so compare with the configured type
+        assertEquals(serverConfig.databaseType.value.name, health.database.type)
         assertTrue(health.storage.type == "local" || health.storage.type == "nfs")
         assertTrue(health.storage.totalBytes >= health.storage.freeBytes)
     }
