@@ -120,7 +120,9 @@ class ContractClient(
         deviceName: String?,
     ): ContractResponse {
         val boundary = "----contract" + UUID.randomUUID().toString().replace("-", "")
-        val head = "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        val head =
+            "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n" +
+                "Content-Type: application/octet-stream\r\n\r\n"
         val tail = "\r\n--$boundary--\r\n"
         val payload = head.toByteArray() + content + tail.toByteArray()
         val query = if (deviceName != null) "?device=" + URLEncoder.encode(deviceName, Charsets.UTF_8) else ""
@@ -334,7 +336,8 @@ class ContractClient(
             "mutation KarasuUpdateMangaCategories(\$id: Int!, \$add: [Int!], \$remove: [Int!]) { " +
                 "updateMangaCategories(input: {id: \$id, patch: {addToCategories: \$add, removeFromCategories: \$remove}}) { clientMutationId } }"
         const val LIBRARY =
-            "query KarasuLibrary(\$first: Int!, \$offset: Int!) { mangas(filter: {inLibrary: {equalTo: true}}, orderBy: ID, orderByType: ASC, " +
+            "query KarasuLibrary(\$first: Int!, \$offset: Int!) { " +
+                "mangas(filter: {inLibrary: {equalTo: true}}, orderBy: ID, orderByType: ASC, " +
                 "first: \$first, offset: \$offset) { nodes { id sourceId url categories { nodes { id } } " +
                 "chapters { nodes { id url isRead lastPageRead lastReadAt } } } pageInfo { hasNextPage } } }"
     }
