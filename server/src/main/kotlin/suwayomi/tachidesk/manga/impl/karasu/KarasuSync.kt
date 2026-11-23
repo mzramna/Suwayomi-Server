@@ -148,6 +148,8 @@ object KarasuSync {
                 (ChapterTable innerJoin MangaTable)
                     .selectAll()
                     .where { ChapterTable.id inList request.chapterIds }
+                    // a database may return an IN list in any order; the tombstones and the log follow chapter id
+                    .orderBy(ChapterTable.id to SortOrder.ASC)
                     .map {
                         listOf(
                             it[MangaTable.sourceReference],
