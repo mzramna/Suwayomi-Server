@@ -30,7 +30,7 @@ import suwayomi.tachidesk.manga.model.table.KarasuOperationTable
 import java.security.MessageDigest
 import java.util.UUID
 
-enum class KarasuEntity { CATEGORY, CATEGORY_LINK, PROGRESS, HISTORY, MERGED, DELETION, POLICY, BACKUP }
+enum class KarasuEntity { CATEGORY, CATEGORY_LINK, PROGRESS, HISTORY, MERGED, DELETION, POLICY, BACKUP, EXTENSION_REPO }
 
 enum class KarasuAction { SET, REMOVE }
 
@@ -127,6 +127,11 @@ object KarasuOperations {
     ) = "merged:$sourceId|$mangaUrl"
 
     fun backupKey(id: String) = "backup:$id"
+
+    /** [indexUrl] is the URL the server stores for the extension store (the one `extensionStores` returns). */
+    fun extensionRepoKey(indexUrl: String) = "repo:$indexUrl"
+
+    fun extensionRepoValue(indexUrl: String): JsonObject = buildJsonObject { put("indexUrl", indexUrl) }
 
     const val POLICY_KEY = "policy"
 

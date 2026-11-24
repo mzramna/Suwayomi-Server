@@ -30,6 +30,7 @@ import suwayomi.tachidesk.manga.impl.extension.github.NetworkLegacyExtension
 import suwayomi.tachidesk.manga.impl.extension.github.NetworkLegacyExtensionRepo
 import suwayomi.tachidesk.manga.impl.extension.github.toExtensionInfo
 import suwayomi.tachidesk.manga.impl.extension.github.toExtensionInfos
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
 import suwayomi.tachidesk.manga.model.dataclass.ExtensionInfo
 import suwayomi.tachidesk.manga.model.dataclass.ExtensionStore
 import suwayomi.tachidesk.manga.model.table.ExtensionStoreTable
@@ -186,6 +187,8 @@ object ExtensionStoreService {
         val toAdd = prefUrls - dbStores.keys
         val toRemove = (dbStores.keys - prefUrls).toMutableSet()
         var needsPrefUpdate = toRemove.isNotEmpty()
+        // stores that really entered the database (not a store that was already there under its final url)
+        val added = linkedSetOf<String>()
 
         toAdd.forEach { url ->
             try {
@@ -198,6 +201,7 @@ object ExtensionStoreService {
                     toRemove -= store.indexUrl
                 }
                 upsert(store)
+                if (store.indexUrl !in dbStores.keys) added += store.indexUrl
             } catch (e: Exception) {
                 logger.warn(e) { "Failed to sync preference store '$url' to database" }
             }
@@ -211,6 +215,8 @@ object ExtensionStoreService {
         if (needsPrefUpdate) {
             syncDbToPrefs()
         }
+        // what changed in the stores the user chose (not the url rewrites the server does by itself)
+        KarasuRecorder.extensionReposChanged(added, toRemove)
     }
 
     suspend fun getExtensions(store: ExtensionStore): List<ExtensionInfo> {

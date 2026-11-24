@@ -58,6 +58,38 @@ object KarasuRecorder {
             skipIfSameAsLast = false,
         )
 
+    // -- extension repositories (extension stores) -----------------------------------------------------------
+
+    /**
+     * Logs the stores that were really added (SET, value `{"indexUrl":...}`) and removed (REMOVE) in one go.
+     * The callers compare against the database first: a store that already existed is not "added" and a URL the
+     * server itself rewrites (redirect, `index.min.json` -> `repo.json`) is not a change the user made.
+     */
+    fun extensionReposChanged(
+        added: Collection<String>,
+        removed: Collection<String>,
+    ) {
+        if (!enabled() || (added.isEmpty() && removed.isEmpty())) return
+        val operations =
+            added.distinct().map {
+                PendingOperation(
+                    KarasuEntity.EXTENSION_REPO,
+                    KarasuOperations.extensionRepoKey(it),
+                    KarasuAction.SET,
+                    KarasuOperations.extensionRepoValue(it),
+                )
+            } +
+                removed.distinct().map {
+                    PendingOperation(KarasuEntity.EXTENSION_REPO, KarasuOperations.extensionRepoKey(it), KarasuAction.REMOVE)
+                }
+        // a repo can be removed and added again: every effective change is kept, so no "same as last" filter
+        KarasuOperations.recordAll(operations, skipIfSameAsLast = false)
+    }
+
+    fun extensionRepoAdded(indexUrl: String) = extensionReposChanged(listOf(indexUrl), emptyList())
+
+    fun extensionRepoRemoved(indexUrl: String) = extensionReposChanged(emptyList(), listOf(indexUrl))
+
     // -- manga <-> category links ---------------------------------------------------------------------------
 
     /** Links (manga id, category id) of the user that exist now, to be compared after a delete. */

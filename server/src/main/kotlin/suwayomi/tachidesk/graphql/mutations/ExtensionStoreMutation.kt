@@ -15,6 +15,8 @@ import suwayomi.tachidesk.graphql.directives.RequireAuth
 import suwayomi.tachidesk.graphql.directives.RequirePermissions
 import suwayomi.tachidesk.graphql.types.ExtensionStoreType
 import suwayomi.tachidesk.manga.impl.extension.ExtensionStoreService
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRecorder
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRequestContext
 import suwayomi.tachidesk.manga.model.table.ExtensionStoreTable
 import suwayomi.tachidesk.server.JavalinSetup.future
 import suwayomi.tachidesk.server.user.UserPermission
@@ -35,11 +37,20 @@ class ExtensionStoreMutation {
     @RequirePermissions(UserPermission.MANAGE_EXTENSION_STORES)
     fun addExtensionStore(input: AddExtensionStoreInput): CompletableFuture<AddExtensionStorePayload?> {
         val (clientMutationId, indexUrl) = input
+        // `future` runs on another thread, where the request's device is not visible: read it here
+        val device = KarasuRequestContext.device()
         return future {
             val store = ExtensionStoreService.fetch(indexUrl)
 
+            // the log only wants effective changes: adding a store that is already there is a refresh
+            val isNew =
+                device == null &&
+                    transaction {
+                        ExtensionStoreTable.selectAll().where { ExtensionStoreTable.indexUrl eq store.indexUrl }.firstOrNull() == null
+                    }
             ExtensionStoreService.upsert(store)
             ExtensionStoreService.syncDbToPrefs()
+            if (isNew) KarasuRequestContext.withDevice(device) { KarasuRecorder.extensionRepoAdded(store.indexUrl) }
             val row =
                 transaction {
                     ExtensionStoreTable
@@ -69,6 +80,7 @@ class ExtensionStoreMutation {
     @RequirePermissions(UserPermission.MANAGE_EXTENSION_STORES)
     fun removeExtensionStore(input: RemoveExtensionStoreInput): CompletableFuture<RemoveExtensionStorePayload?> {
         val (clientMutationId, indexUrl) = input
+        val device = KarasuRequestContext.device()
         return future {
             val store =
                 transaction {
@@ -86,6 +98,8 @@ class ExtensionStoreMutation {
             }
 
             ExtensionStoreService.syncDbToPrefs()
+            // only a store that was there is "removed"
+            if (store != null) KarasuRequestContext.withDevice(device) { KarasuRecorder.extensionRepoRemoved(indexUrl) }
 
             RemoveExtensionStorePayload(
                 clientMutationId = clientMutationId,
