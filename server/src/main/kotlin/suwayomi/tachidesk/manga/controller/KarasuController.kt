@@ -23,6 +23,7 @@ import suwayomi.tachidesk.manga.impl.karasu.HistoryRequestDto
 import suwayomi.tachidesk.manga.impl.karasu.KarasuBackups
 import suwayomi.tachidesk.manga.impl.karasu.KarasuHealth
 import suwayomi.tachidesk.manga.impl.karasu.KarasuOperations
+import suwayomi.tachidesk.manga.impl.karasu.KarasuRequestContext
 import suwayomi.tachidesk.manga.impl.karasu.KarasuSync
 import suwayomi.tachidesk.manga.impl.karasu.MangaRefDto
 import suwayomi.tachidesk.manga.impl.karasu.MergedGroupDto
@@ -34,6 +35,9 @@ import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.server.JavalinSetup.Attribute
 import suwayomi.tachidesk.server.JavalinSetup.getAttribute
 import suwayomi.tachidesk.server.user.requireUser
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.util.zip.GZIPInputStream
 
 @Serializable
 private data class ErrorDto(
@@ -80,11 +84,47 @@ object KarasuController {
 
     private inline fun <reified T> Context.readBody(): T? =
         try {
-            json.decodeFromString<T>(body())
+            json.decodeFromString<T>(requestText() ?: return null)
         } catch (_: Exception) {
             fail(HttpStatus.BAD_REQUEST, "Invalid JSON body")
             null
         }
+
+    /**
+     * The request body as text. Javalin does not decompress requests, so `Content-Encoding: gzip` (what the app sends
+     * for big batches of operations) is undone here; the inflated size is capped so a tiny body cannot blow up
+     * memory. Any other encoding is a 415, a body that is not valid gzip or too big a 400 (null is returned and the
+     * response is already filled in).
+     */
+    private fun Context.requestText(): String? {
+        val encoding = header("Content-Encoding")?.trim()?.lowercase()
+        if (encoding.isNullOrEmpty() || encoding == "identity") return body()
+        if (encoding != "gzip" && encoding != "x-gzip") {
+            fail(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Content-Encoding '$encoding' (use gzip or none)")
+            return null
+        }
+        return try {
+            GZIPInputStream(bodyInputStream()).use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0L
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > MAX_INFLATED_BODY) {
+                        fail(HttpStatus.BAD_REQUEST, "Request body is bigger than $MAX_INFLATED_BODY bytes once decompressed")
+                        return null
+                    }
+                    out.write(buffer, 0, read)
+                }
+                out.toString(Charsets.UTF_8)
+            }
+        } catch (_: IOException) {
+            fail(HttpStatus.BAD_REQUEST, "Invalid gzip body")
+            null
+        }
+    }
 
     private fun Context.intParam(name: String): Int? =
         pathParam(name).toIntOrNull().also { if (it == null) fail(HttpStatus.BAD_REQUEST, "Invalid $name") }
@@ -248,7 +288,7 @@ object KarasuController {
         ctx.user()
         val body = ctx.readBody<OperationsPostDto>() ?: return
         try {
-            ctx.respond(KarasuOperations.append(body.operations))
+            ctx.respond(KarasuOperations.append(body.operations, ctx.header(KarasuRequestContext.HEADER)))
         } catch (e: IllegalArgumentException) {
             ctx.fail(HttpStatus.BAD_REQUEST, e.message ?: "Invalid operations")
         }
@@ -258,8 +298,12 @@ object KarasuController {
         ctx.user()
         val afterSeq = ctx.queryParam("afterSeq")?.takeIf { it.isNotBlank() }
         val limit = ctx.queryParam("limit")?.takeIf { it.isNotBlank() }
-        if ((afterSeq != null && afterSeq.toLongOrNull() == null) || (limit != null && limit.toIntOrNull() == null)) {
-            return ctx.fail(HttpStatus.BAD_REQUEST, "afterSeq and limit must be integers")
+        val ack = ctx.queryParam("ack")?.takeIf { it.isNotBlank() }
+        if ((afterSeq != null && afterSeq.toLongOrNull() == null) ||
+            (limit != null && limit.toIntOrNull() == null) ||
+            (ack != null && ack.toLongOrNull() == null)
+        ) {
+            return ctx.fail(HttpStatus.BAD_REQUEST, "afterSeq, limit and ack must be integers")
         }
         try {
             ctx.respond(
@@ -267,6 +311,8 @@ object KarasuController {
                     afterSeq = afterSeq?.toLong() ?: 0L,
                     entity = ctx.queryParam("entity"),
                     limit = limit?.toInt() ?: KarasuOperations.DEFAULT_LIST_LIMIT,
+                    deviceId = ctx.header(KarasuRequestContext.HEADER),
+                    ack = ack?.toLong(),
                 ),
             )
         } catch (e: IllegalArgumentException) {
@@ -281,4 +327,5 @@ object KarasuController {
     }
 
     private const val CBZ_MIME = "application/vnd.comicbook+zip"
+    private const val MAX_INFLATED_BODY = 64L * 1024 * 1024
 }

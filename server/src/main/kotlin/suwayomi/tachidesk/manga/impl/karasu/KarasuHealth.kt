@@ -33,12 +33,15 @@ data class HealthDto(
     val status: String,
     val serverVersion: String,
     val apiVersion: Int,
+    /** 3 = operation log with acknowledgements, compaction and `minSeq`/`resetRequired` (see docs/karasu-integration.md). */
+    val opsVersion: Int,
     val database: DatabaseInfoDto,
     val storage: StorageInfoDto,
 )
 
 object KarasuHealth {
     const val API_VERSION = 1
+    const val OPS_VERSION = 3
 
     fun get(): HealthDto {
         val downloads = File(Injekt.get<ApplicationDirs>().downloadsRoot)
@@ -47,6 +50,7 @@ object KarasuHealth {
             status = "ok",
             serverVersion = About.getAbout().version,
             apiVersion = API_VERSION,
+            opsVersion = OPS_VERSION,
             database = DatabaseInfoDto(serverConfig.databaseType.value.name),
             storage =
                 StorageInfoDto(

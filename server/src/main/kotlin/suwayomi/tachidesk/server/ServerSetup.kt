@@ -63,6 +63,7 @@ import suwayomi.tachidesk.server.util.ConfigTypeRegistration
 import suwayomi.tachidesk.server.util.ExitCode
 import suwayomi.tachidesk.server.util.SystemTray
 import suwayomi.tachidesk.server.util.shutdownApp
+import suwayomi.tachidesk.util.HAScheduler
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import xyz.nulldev.androidcompat.AndroidCompat
@@ -82,6 +83,7 @@ import java.net.PasswordAuthentication
 import java.security.Security
 import java.util.Locale
 import kotlin.random.Random
+import kotlin.time.Duration.Companion.hours
 
 private val logger = KotlinLogging.logger {}
 
@@ -365,13 +367,21 @@ fun applicationSetup() {
         shutdownApp(ExitCode.LocalSourceSetupFailure)
     }
 
-    // the Karasu operation log keeps 90 days
-    try {
-        val pruned = KarasuOperations.pruneOld()
-        if (pruned > 0) logger.info { "Pruned $pruned karasu operations older than ${KarasuOperations.RETENTION_DAYS} days" }
-    } catch (e: Exception) {
-        logger.warn(e) { "Could not prune the karasu operation log" }
+    // Karasu operation log: compact what an older version wrote, then keep only what some active device still has to
+    // receive (acknowledgements + device TTL, 90 day ceiling); repeated every hour
+    fun maintainKarasuOperationLog() {
+        try {
+            val compacted = KarasuOperations.compactExisting()
+            val pruned = KarasuOperations.pruneAcked()
+            if (compacted > 0 || pruned > 0) {
+                logger.info { "Karasu operation log: compacted $compacted, pruned $pruned operation(s)" }
+            }
+        } catch (e: Exception) {
+            logger.warn(e) { "Could not maintain the karasu operation log" }
+        }
     }
+    maintainKarasuOperationLog()
+    HAScheduler.schedule(::maintainKarasuOperationLog, 1.hours.inWholeMilliseconds, 1.hours.inWholeMilliseconds, "karasu-operation-log")
 
     serverConfig.subscribeTo(
         combine<Any, DatabaseSettings>(
