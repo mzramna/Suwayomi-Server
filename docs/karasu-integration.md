@@ -9,7 +9,7 @@ trabalharem juntos. O servidor é passivo: o Karasu é quem inicia toda sincroni
 | --- | --- |
 | API REST `/api/v1/karasu/*` (contrato abaixo) | `manga/KarasuAPI.kt`, `manga/controller/KarasuController.kt`, `manga/impl/karasu/*` |
 | Fontes mescladas (agregação + reserva) | `manga/impl/karasu/MergedSources.kt`, ganchos em `Manga.updateMangaAndChapters`, `ChapterForDownload.refreshChapterPageList` e `Page.getPageImage` |
-| Tabelas novas (migrações `M0069_KarasuSync`, `M0070_KarasuOperations`) | `MergedManga`, `MergedChapterRoute`, `KarasuDeletion`, `KarasuSetting`, `KarasuOperation` |
+| Tabelas novas (migrações `M0069_KarasuSync`, `M0070_KarasuOperations`, `M0071_KarasuDevices`) | `MergedManga`, `MergedChapterRoute`, `KarasuDeletion`, `KarasuSetting`, `KarasuOperation`, `KarasuDevice`, `KarasuSeenOperation` |
 | Log de operações (contrato v2, abaixo) | `manga/impl/karasu/KarasuOperations.kt`, `KarasuRecorder.kt`, `KarasuRequestContext.kt` |
 | Bateria de contrato HTTP (app + WebUI roteirizados) | `scripts/contract/run.sh`, `server/src/test/kotlin/suwayomi/tachidesk/contract`, `.github/workflows/ci_contract.yml` |
 | Docker multi-arch (NFS opcional, H2/PostgreSQL) | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/docker-compose.example.yml` |
@@ -60,10 +60,13 @@ Erros: JSON `{"error":"mensagem"}` com status HTTP adequado.
 ## Saúde
 `GET /health` → 200
 ```json
-{ "status":"ok", "serverVersion":"v2.1.0", "apiVersion":1,
+{ "status":"ok", "serverVersion":"v2.1.0", "apiVersion":1, "opsVersion":3,
   "database":{"type":"H2"|"POSTGRESQL"},
   "storage":{"type":"local"|"nfs","path":"/data/downloads","freeBytes":123,"totalBytes":456} }
 ```
+`opsVersion` = versão do log de operações: ausente/`2` = log simples (sem `ack`); `3` = log com confirmação por aparelho, compactação,
+`minSeq`/`resetRequired` e gzip (seção "Log de operações como fonte da verdade"). O app só deve confiar no log como caminho normal de
+sincronização quando `opsVersion >= 3`; com servidor antigo mantém os snapshots.
 
 ## Arquivo CBZ de capítulo baixado
 `GET|HEAD /chapter/{chapterId}/archive` → 200 CBZ (Content-Length, Content-Disposition). 404 se o capítulo NÃO está baixado no servidor (nunca dispara download).
@@ -108,12 +111,15 @@ Categorias, progresso de leitura (isRead/lastPageRead), extensões instaladas: o
 O servidor mantém um log de "quem mudou o quê e quando" para que o app resolva **conflitos reais** (a mesma chave mudou nos
 dois lados desde a última sincronização) pelo horário da ação. É registro, não comando: nada é reaplicado a partir dele.
 Tabela `KarasuOperation` (`seq` autoincremento atribuído pelo servidor, `op_id` único, `device_id`, `ts` em ms UTC, `entity`,
-chave, `action`, valor JSON, `received_at`); retenção de 90 dias (poda na subida do servidor, por `received_at`).
+chave, `action`, valor JSON, `received_at`). Desde `opsVersion 3` o log guarda **só o que algum aparelho ativo ainda precisa receber**
+(compactação por alvo + confirmação por aparelho; ver "Log de operações como fonte da verdade"); o teto de 90 dias (por `received_at`)
+continua valendo para tudo.
 
 * `POST /operations` `{"operations":[Operation]}` → `{"accepted":n,"duplicates":m}`; idempotente por `id`; valida `entity`/`action`
-  (400 sem gravar nada); máximo de 10000 por requisição. Guarda `deviceId` e `ts` como o app mandou.
-* `GET /operations?afterSeq=0&entity=&limit=1000` → `{"operations":[...+seq],"lastSeq":n,"serverTime":ms}` ordenado por `seq`;
-  `limit` máx. 5000 (acima disso é reduzido); `lastSeq` = `seq` da última operação devolvida, ou o próprio `afterSeq` se não há nada novo.
+  (400 sem gravar nada); máximo de 10000 por requisição. Guarda `deviceId` e `ts` como o app mandou. Aceita `Content-Encoding: gzip`.
+* `GET /operations?afterSeq=0&entity=&limit=1000&ack=` → `{"operations":[...+seq],"lastSeq":n,"serverTime":ms,"minSeq":n,"resetRequired":bool}`
+  ordenado por `seq`; `limit` máx. 5000 (acima disso é reduzido); `lastSeq` = `seq` da última operação devolvida, ou o próprio
+  `afterSeq` se não há nada novo (nunca menos que `minSeq - 1`). `ack`, `minSeq` e `resetRequired` estão descritos abaixo.
 * Entidades e chaves (`sourceId` é a fonte da obra como string; `merged:` usa a obra primária):
 
   | `entity` | `key` | `value` (SET) | quem o servidor registra sozinho |
@@ -155,10 +161,91 @@ Como o header chega às mutações: um handler `before` do Javalin lê o header 
 (`KarasuRequestContext`, um `ThreadLocal` só dentro desse trecho; código que troca de thread deve ler o dispositivo antes e passar
 `deviceId` explícito a `KarasuOperations.record`).
 
+## Log de operações como fonte da verdade (`opsVersion 3`)
+
+O log deixa de ser só desempate de conflitos: é o caminho normal pelo qual cada aparelho recebe o que mudou (os snapshots de 3 vias do
+app passam a ser só recuperação). Para isso o servidor sabe **o que cada aparelho já aplicou** e só guarda o que ainda falta para
+algum aparelho ativo.
+
+### Aparelhos e `ack`
+
+* Aparelho = valor não vazio de `X-Karasu-Device` diferente de `web` (a WebUI **nunca** conta como aparelho). Tabela
+  `KarasuDevice(device_id, ack_seq, reset_seq, last_seen_at)`, criada/atualizada no 1º `GET`/`POST /operations` do aparelho.
+  Só essas duas rotas atualizam `last_seen_at`.
+* `GET /operations?ack=<seq>`: "apliquei tudo até `seq`". `ack_seq = max(ack_seq, ack)` (nunca recua; um `ack` acima da cabeça do log é
+  reduzido a ela). **O app só envia `ack` depois de aplicar** o que recebeu antes (na prática: no GET seguinte). `ack` sem
+  `X-Karasu-Device` é ignorado.
+* **Ativo** = `last_seen_at` dentro do TTL (`karasu.deviceTtlDays`, padrão **30** dias; propriedade de sistema da JVM
+  `-Dkarasu.deviceTtlDays=45` ou variável de ambiente `KARASU_DEVICE_TTL_DAYS=45`; de 1 a 90). Aparelho fora do TTL deixa de segurar a
+  poda; a linha dele só é apagada depois do teto de 90 dias.
+* Um app antigo (manda o header mas nunca `ack`) fica com `ack_seq = 0`: segura a poda enquanto continuar sincronizando, até o teto de 90
+  dias. Ele não quebra: continua recebendo `operations`/`lastSeq`/`serverTime` como antes.
+
+### `minSeq` e `resetRequired`
+
+* `minSeq` = `(maior seq já apagado pela poda) + 1`, ou `1` se nada foi podado. É o menor `afterSeq + 1` para o qual o log ainda está
+  completo. **Não** é o menor `seq` retido: a compactação deixa buracos (uma operação substituída por outra mais nova) que não perdem nada.
+* `resetRequired = true` quando o chamador pode ter perdido operações que já não existem:
+  * `afterSeq < minSeq - 1` (qualquer cliente; inclui aparelho novo com `afterSeq=0` se o log já foi podado alguma vez);
+  * (só aparelho) aparelho **novo** depois que o log foi podado, ou **inativo além do TTL**, ou com cursor atrás da parte podada. Nesses
+    casos o servidor grava `reset_seq = cabeça do log` e o aviso **persiste** (a resposta pode se perder) até o aparelho confirmar
+    (`ack >= reset_seq`). O `ack` da própria requisição que detectou isso é ignorado.
+  Aparelho novo com o log nunca podado (`minSeq = 1`) **não** recebe `resetRequired`: lê o log desde o início.
+* Quem recebe `resetRequired`: **não** aplica `operations` como se fossem completas; reconcilia por estado (snapshots/GraphQL), guarda
+  `lastSeq` como cursor e envia `ack=<lastSeq>` no GET seguinte. Enquanto não confirmar, o aparelho (com `reset_seq` como piso do seu
+  `ack`) só segura as operações posteriores à cabeça do log daquele momento.
+* `operations`, `lastSeq` e `serverTime` continuam como antes (app antigo ignora os campos novos).
+
+### Poda (`pruneAcked`)
+
+Apaga `seq <= min(max(ack_seq, reset_seq))` dos aparelhos ativos. Sem aparelho ativo só o teto de 90 dias (`pruneOld`, por `received_at`)
+apaga. Roda na subida do servidor, a cada 1 hora e logo depois de cada `ack` gravado. Cada poda registra o maior `seq` apagado (chave
+`operations.prunedUpTo` em `KarasuSetting`), que é o que gera `minSeq`. Na subida roda também uma compactação única do log antigo
+(`compactExisting`: por alvo só a operação de maior `ts`).
+
+### Compactação lógica na escrita
+
+Em `POST /operations` e nos registros automáticos (`deviceId=web`), na mesma transação, por alvo `(entity, key)`:
+
+| chega | já existe | resultado |
+| --- | --- | --- |
+| qualquer, `ts` **menor** que o retido do alvo | qualquer | descartada (conta em `duplicates`) |
+| SET | SET | fica só o último (`ts` novo >= antigo) |
+| SET | REMOVE (tombstone) | fica o SET |
+| REMOVE | SET | o SET some e fica o REMOVE (tombstone) |
+| REMOVE | SET, e **nenhum aparelho ativo além de quem fez o REMOVE** | some tudo: nada é gravado |
+| REMOVE | REMOVE | fica o último |
+
+PROGRESS e HISTORY (sempre SET, ou REMOVE no histórico) mantêm só a última. O tombstone sai quando todos os aparelhos ativos confirmam. A
+regra "o SET ninguém viu, apague os dois" **não** é usada como está porque não é segura: um aparelho que nunca viu esse SET pode ter uma
+versão mais antiga do alvo (que veio por reconciliação, ou cuja operação já foi podada) e precisa saber da remoção. Por isso os dois só
+somem juntos quando não existe ninguém para avisar.
+
+Idempotência: reenviar um `id` que já foi compactado ou podado é duplicata (tabela `KarasuSeenOperation`, ids lembrados por TTL dias; o
+reenvio de um id retido continua duplicata pelo `op_id` único), e uma operação com `ts` menor que a retida do alvo é descartada. O app
+apaga a operação local ao receber 200 do `POST`, então o reenvio só acontece quando a resposta se perde. A decisão é por `ts` cru (sem o
+`clockOffset` do app): um relógio muito adiantado faz as operações mais antigas de outro aparelho para o mesmo alvo serem descartadas.
+
+`skipIfSameAsLast` (registro automático) compara com o que ainda está no log: depois da poda, uma repetição idêntica é registrada de novo
+(inofensivo, reaplicar não muda nada).
+
+### Compressão
+
+Só gzip HTTP, sem mudar formato nem nomes de campos: `GET /operations` com `Accept-Encoding: gzip` responde comprimido (o Javalin comprime
+respostas acima de ~1,5 KB; clientes sem o header recebem JSON puro), e `POST /operations` aceita `Content-Encoding: gzip` (o Javalin não
+descomprime pedidos; o controller faz isso, com teto de 64 MB descomprimido; outro `Content-Encoding` = 415, gzip inválido = 400).
+1000 operações típicas ficam em menos de 25% do JSON cru (medido nos testes).
+
+### O que o app deve fazer
+
+1. `GET /operations?afterSeq=<cursor>` (com `X-Karasu-Device`); se `resetRequired`, reconciliar por estado e seguir de `lastSeq`.
+2. Aplicar `operations` localmente por entidade; **só depois** guardar o cursor e, no próximo GET, mandar `ack=<seq aplicado>`.
+3. `POST /operations` com as operações locais; apagar as locais ao receber 200.
+
 ## Testes de contrato HTTP
 
 `scripts/contract/run.sh h2|postgres` (precisa de `SERVER_JAR`) sobe o JAR, semeia obras/capítulos (`scripts/contract/seed.py`) e
 roda `suwayomi.tachidesk.contract.*` (`-PcontractUrl=http://127.0.0.1:PORT -PcontractUser= -PcontractPass=`; sem `contractUrl`
 os testes são ignorados). Dois clientes roteirizados — "app" (com `X-Karasu-Device`) e "web" (sem) — fazem as chamadas
-REST e as consultas/mutações GraphQL do app e conferem o estado e o log (entity/key/action/value/deviceId/ts, sem duplicar).
+REST e as consultas/mutações GraphQL do app e conferem o estado e o log (entity/key/action/value/deviceId/ts, sem duplicar). `ContractOperationLogTest` cobre por HTTP real o `ack`, `minSeq`/`resetRequired`, a compactação, o `Content-Encoding: gzip` do POST e o `Accept-Encoding: gzip` do GET (com a razão de compressão de 1000 operações).
 No CI: `.github/workflows/ci_contract.yml` (H2 e PostgreSQL).
