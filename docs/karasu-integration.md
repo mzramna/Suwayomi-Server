@@ -10,6 +10,7 @@ trabalharem juntos. O servidor é passivo: o Karasu é quem inicia toda sincroni
 | API REST `/api/v1/karasu/*` (contrato abaixo) | `manga/KarasuAPI.kt`, `manga/controller/KarasuController.kt`, `manga/impl/karasu/*` |
 | Fontes mescladas (agregação + reserva) | `manga/impl/karasu/MergedSources.kt`, ganchos em `Manga.updateMangaAndChapters`, `ChapterForDownload.refreshChapterPageList` e `Page.getPageImage` |
 | Tabelas novas (migrações `M0069_KarasuSync`, `M0070_KarasuOperations`, `M0071_KarasuDevices`) | `MergedManga`, `MergedChapterRoute`, `KarasuDeletion`, `KarasuSetting`, `KarasuOperation`, `KarasuDevice`, `KarasuSeenOperation` |
+| Shelf do Yatagarasu / KOReader (abaixo) | `manga/impl/karasu/KarasuShelf.kt`, `manga/controller/KarasuShelfController.kt` |
 | Log de operações (contrato v2, abaixo) | `manga/impl/karasu/KarasuOperations.kt`, `KarasuRecorder.kt`, `KarasuRequestContext.kt` |
 | Bateria de contrato HTTP (app + WebUI roteirizados) | `scripts/contract/run.sh`, `server/src/test/kotlin/suwayomi/tachidesk/contract`, `.github/workflows/ci_contract.yml` |
 | Docker multi-arch (NFS opcional, H2/PostgreSQL) | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/docker-compose.example.yml` |
@@ -103,6 +104,57 @@ grava como "agora" ao mudar `lastPageRead`). Ids inexistentes são ignorados. A 
 
 ## Fora do contrato (GraphQL nativo do Suwayomi, já existe)
 Categorias, progresso de leitura (isRead/lastPageRead), extensões instaladas: o Karasu usa `POST {server}/api/graphql` com queries escritas à mão (OkHttp + kotlinx.serialization), baseadas em `Suwayomi-Bunko/data/src/main/graphql/*.graphql`.
+
+---
+
+# Shelf do Yatagarasu (KOReader)
+
+Rotas para o fluxo "app envia o CBZ para ler no e-reader; o plugin do KOReader devolve se foi lido". São o equivalente, sob
+`/api/v1/karasu`, do contêiner `/api/shelf` do Yatagarasu, e valem a mesma autenticação e o mesmo `health` das demais rotas
+(sem credencial o servidor responde 404 + `WWW-Authenticate`, como no resto). Quem usa: o app Karasu (envia, lista, apaga) e o
+plugin do KOReader (lista, baixa, marca lido).
+
+`chapterId` é o id **local do app**, sem relação com os capítulos do servidor. O CBZ guardado é exatamente o que o app enviou
+(já reformatado para o aparelho); o servidor não reaproveita o CBZ baixado nele e **não marca `isRead` no Suwayomi** (o app
+propaga a leitura pela sincronização de progresso). Essas operações **não entram no log de operações**.
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /health` | o mesmo da seção Saúde (não existe outro) |
+| `GET /shelf` | 200 `{"entries":[{"chapterId":123,"chapterUrl":"/c","read":false}]}` ordenado por `chapterId` |
+| `POST /shelf` | multipart; 201 com a entrada `{"chapterId":123,"chapterUrl":"/c","read":false}`; 400 se faltar parte, o JSON for inválido ou o arquivo vazio |
+| `DELETE /shelf/{chapterId}` | 204, exista ou não; 400 se o id não for numérico |
+| `GET\|HEAD /shelf/{chapterId}/file` | 200 CBZ (`Content-Type: application/vnd.comicbook+zip`, `Content-Length`, `Content-Disposition: attachment; filename="{chapterId}.cbz"`); 404 se não existe |
+| `PUT /shelf/{chapterId}/read` | corpo `{"read":true\|false}`; 204; 404 se o capítulo não está na shelf; 400 se o corpo for inválido |
+
+`POST /shelf`: duas partes. `metadata` (JSON; com ou sem `filename`, até 64 KB) e `file` (o CBZ,
+`application/vnd.comicbook+zip`, sem limite de tamanho):
+```json
+{"chapterId":123,"chapterUrl":"/c","mangaTitle":"..","chapterName":"..","chapterNumber":1.5,"sourceId":"99"}
+```
+`chapterId` (inteiro >= 0, também aceito como texto só de dígitos) e `chapterUrl` (texto não vazio) são obrigatórios; os demais
+são descritivos e opcionais (`sourceId` pode ser número ou texto). A rota é **idempotente por `chapterId`**: reenviar um id que
+já existe **substitui o arquivo e zera `read`**.
+
+- Armazenamento: `{dataRoot}/karasu-shelf/{chapterId}.cbz` + `{chapterId}.json` (metadados e `read`). O nome vem só de um número
+  (`^[0-9]{1,18}$`); um id como `../x` é 400 e nunca vira caminho.
+- Gravação: o arquivo vai para `*.part` e é renomeado ao final (como os backups); um upload interrompido não altera a versão
+  anterior, e `*.part` nunca aparece na lista. Restos com mais de 24 h são apagados no próximo upload.
+- Memória: o Javalin/Jetty grava em arquivo temporário (`java.io.tmpdir`) toda parte multipart acima de 1 byte, então um CBZ
+  grande não fica no heap; ele é copiado uma vez para a shelf. Durante o upload é preciso espaço livre no `tmpdir` e na shelf.
+- Concorrência: trocas de arquivo/registro são serializadas por um lock; a cópia do upload roda fora dele.
+
+Exemplo (o que o plugin faz):
+```sh
+S=http://servidor:4567/api/v1/karasu; A='-u usuario:senha'
+curl $A $S/health
+curl $A -F 'metadata={"chapterId":123,"chapterUrl":"/c","mangaTitle":"M","chapterName":"N","chapterNumber":1,"sourceId":"9"};type=application/json' \
+        -F 'file=@cap.cbz;type=application/vnd.comicbook+zip' $S/shelf
+curl $A $S/shelf
+curl $A -o baixado.cbz $S/shelf/123/file && cmp cap.cbz baixado.cbz
+curl $A -X PUT -d '{"read":true}' $S/shelf/123/read
+curl $A -X DELETE $S/shelf/123
+```
 
 ---
 
