@@ -25,7 +25,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The storage and rules of the Yatagarasu shelf; the HTTP side of it is covered by the contract battery. */
+/** Armazenamento e regras da shelf do Yatagarasu; o lado HTTP é coberto pela bateria de contrato. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class KarasuShelfTest : ApplicationTest() {
     private val shelfDir get() = File(Injekt.get<ApplicationDirs>().dataRoot, "karasu-shelf")
@@ -143,8 +143,8 @@ class KarasuShelfTest : ApplicationTest() {
         upload(1)
         File(shelfDir, "2.cbz.123e4567-e89b-12d3-a456-426614174000.part").writeBytes(cbz(2))
         File(shelfDir, "2.json.part").writeText("""{"chapterId":2,"chapterUrl":"/c2"}""")
-        File(shelfDir, "3.cbz").writeBytes(cbz(3)) // archive without a record
-        File(shelfDir, "4.json").writeText("""{"chapterId":4,"chapterUrl":"/c4"}""") // record without archive
+        File(shelfDir, "3.cbz").writeBytes(cbz(3)) // CBZ sem registro
+        File(shelfDir, "4.json").writeText("""{"chapterId":4,"chapterUrl":"/c4"}""") // registro sem CBZ
         File(shelfDir, "5.json").writeText("not json")
         File(shelfDir, "5.cbz").writeBytes(cbz(5))
         assertEquals(listOf(1L), KarasuShelf.list().map { it.chapterId })
@@ -172,7 +172,10 @@ class KarasuShelfTest : ApplicationTest() {
 
     @Test
     fun `metadata is validated`() {
-        val ok = KarasuShelf.parseMetadata("""{"chapterId":123,"chapterUrl":"/c","mangaTitle":"M","chapterName":"N","chapterNumber":1.5,"sourceId":99}""")
+        val ok =
+            KarasuShelf.parseMetadata(
+                """{"chapterId":123,"chapterUrl":"/c","mangaTitle":"M","chapterName":"N","chapterNumber":1.5,"sourceId":99}""",
+            )
         assertEquals(ShelfMetadata(123, "/c", "M", "N", 1.5, "99"), ok)
         // chapterId may come quoted, sourceId as text
         assertEquals(5L, KarasuShelf.parseMetadata("""{"chapterId":"5","chapterUrl":"/c","sourceId":"7"}""")?.chapterId)

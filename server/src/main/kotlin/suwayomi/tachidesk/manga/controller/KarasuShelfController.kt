@@ -30,8 +30,8 @@ private data class ShelfErrorDto(
 )
 
 /**
- * REST endpoints of the Yatagarasu (KOReader) shelf, under /api/v1/karasu/shelf. See docs/karasu-integration.md.
- * Same access rule as the other Karasu routes: an authenticated user, nothing more.
+ * Rotas REST da shelf do Yatagarasu (KOReader), em /api/v1/karasu/shelf. Ver docs/karasu-integration.md.
+ * Mesma regra de acesso das demais rotas Karasu: um usuário autenticado e mais nada.
  */
 object KarasuShelfController {
     private val json = Json { encodeDefaults = true }
@@ -61,12 +61,12 @@ object KarasuShelfController {
     }
 
     /**
-     * Multipart: part `metadata` (JSON) + part `file` (the CBZ). Jetty keeps every part above 1 byte in a temporary
-     * file (Javalin's default multipart config), so a big CBZ never sits in the heap; it is copied once into the shelf.
+     * Multipart: parte `metadata` (JSON) + parte `file` (o CBZ). O Jetty guarda em arquivo temporário toda parte acima de
+     * 1 byte (config padrão do multipart do Javalin), então um CBZ grande nunca fica no heap; ele é copiado uma vez para a shelf.
      */
     fun upload(ctx: Context) {
         ctx.user()
-        // forces Javalin to parse the multipart body with its own config; a body that is not multipart fails here
+        // obriga o Javalin a ler o multipart com a config dele; um corpo que não é multipart falha aqui
         val parts: Map<String, Part> =
             try {
                 ctx.uploadedFiles("metadata")
@@ -78,7 +78,10 @@ object KarasuShelfController {
         val filePart = parts["file"] ?: return ctx.fail(HttpStatus.BAD_REQUEST, "Multipart part 'file' is required")
         if (metadataPart.size > KarasuShelf.MAX_METADATA_BYTES) return ctx.fail(HttpStatus.BAD_REQUEST, "Part 'metadata' is too big")
         val metadata =
-            metadataPart.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8).let(KarasuShelf::parseMetadata)
+            metadataPart.inputStream
+                .use { it.readBytes() }
+                .toString(Charsets.UTF_8)
+                .let(KarasuShelf::parseMetadata)
                 ?: return ctx.fail(HttpStatus.BAD_REQUEST, "Part 'metadata' must be a JSON object with chapterId (number) and chapterUrl")
         val entry =
             try {
@@ -89,7 +92,7 @@ object KarasuShelfController {
         ctx.respond(entry, HttpStatus.CREATED)
     }
 
-    /** Idempotent: 204 whether or not the chapter was there. */
+    /** Idempotente: 204 com ou sem o capítulo. */
     fun delete(ctx: Context) {
         ctx.user()
         val id = ctx.chapterIdParam() ?: return
@@ -97,7 +100,7 @@ object KarasuShelfController {
         ctx.status(HttpStatus.NO_CONTENT)
     }
 
-    /** GET/HEAD: streams the CBZ the app sent. */
+    /** GET/HEAD: devolve o CBZ que o app enviou. */
     fun file(ctx: Context) {
         ctx.user()
         val id = ctx.chapterIdParam() ?: return
@@ -109,14 +112,14 @@ object KarasuShelfController {
             ctx.header("Content-Length", file.length().toString())
             ctx.status(HttpStatus.OK)
         } else {
-            // the size is read from the open stream, so it matches what is sent even if the entry is replaced meanwhile
+            // o tamanho vem do stream aberto, então bate com o que é enviado mesmo se a entrada for substituída no meio
             val stream = file.inputStream()
             ctx.header("Content-Length", stream.channel.size().toString())
             ctx.result(stream)
         }
     }
 
-    /** Body `{"read":true|false}` → 204; 404 if the chapter is not on the shelf. */
+    /** Corpo `{"read":true|false}` → 204; 404 se o capítulo não está na shelf. */
     fun setRead(ctx: Context) {
         ctx.user()
         val id = ctx.chapterIdParam() ?: return

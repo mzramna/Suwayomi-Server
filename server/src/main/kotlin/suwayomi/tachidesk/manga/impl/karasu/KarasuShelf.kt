@@ -24,7 +24,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
 
-/** One entry as the plugin sees it (GET /shelf and the answer of POST /shelf). */
+/** Uma entrada como o plugin a enxerga (GET /shelf e a resposta do POST /shelf). */
 @Serializable
 data class ShelfEntryDto(
     val chapterId: Long,
@@ -37,7 +37,7 @@ data class ShelfListDto(
     val entries: List<ShelfEntryDto>,
 )
 
-/** What the app sends in the `metadata` part of POST /shelf, already validated. */
+/** O que o app envia na parte `metadata` do POST /shelf, já validado. */
 data class ShelfMetadata(
     val chapterId: Long,
     val chapterUrl: String,
@@ -47,7 +47,7 @@ data class ShelfMetadata(
     val sourceId: String,
 )
 
-/** What is kept in "<chapterId>.json": the metadata plus the state the plugin reports back. */
+/** O que fica em "<chapterId>.json": os metadados mais o estado que o plugin devolve. */
 @Serializable
 private data class ShelfRecord(
     val chapterId: Long,
@@ -64,13 +64,13 @@ private data class ShelfRecord(
 }
 
 /**
- * The "shelf" of the Yatagarasu (KOReader) integration: CBZs the Karasu app pushes to be read on the e-reader, and the
- * `read` flag the KOReader plugin reports back. Everything lives in "<dataRoot>/karasu-shelf" as two files per chapter,
- * "<chapterId>.cbz" and "<chapterId>.json". The chapterId is the app's LOCAL id, unrelated to the server's chapters, and
- * the file CBZ is whatever the app prepared for the device, so nothing here touches the downloads of the server.
+ * A "shelf" da integração Yatagarasu (KOReader): CBZs que o app Karasu envia para ler no e-reader e o `read` que o
+ * plugin do KOReader devolve. Tudo fica em "<dataRoot>/karasu-shelf", dois arquivos por capítulo: "<chapterId>.cbz" e
+ * "<chapterId>.json". O chapterId é o id LOCAL do app, sem relação com os capítulos do servidor, e o CBZ é o que o app
+ * preparou para o aparelho; por isso nada aqui toca nos downloads do servidor.
  *
- * A file name is only ever built from a [Long], never from text sent by a client, so there is no path traversal.
- * These uploads are not recorded in the operation log.
+ * O nome de arquivo é sempre montado a partir de um [Long], nunca de texto enviado pelo cliente (sem path traversal).
+ * Esses uploads não entram no log de operações.
  */
 object KarasuShelf {
     const val CBZ_MIME = "application/vnd.comicbook+zip"
@@ -83,7 +83,7 @@ object KarasuShelf {
     private val idPattern = Regex("^[0-9]{1,18}$")
     private val recordName = Regex("^[0-9]{1,18}\\.json$")
 
-    // Serializes the changes of the small files (record + archive swap); the copy of the upload itself runs outside of it.
+    // Serializa a troca dos arquivos pequenos (registro + CBZ); a cópia do upload em si roda fora do lock.
     private val lock = Any()
 
     private fun dir(): File = File(Injekt.get<ApplicationDirs>().dataRoot, "karasu-shelf").also { it.mkdirs() }
@@ -92,18 +92,17 @@ object KarasuShelf {
 
     private fun recordFile(id: Long) = File(dir(), "$id.json")
 
-    /** Only plain decimal digits are an id: "../x", "-1", "+1", "1.5" and the like are refused before any file is touched. */
+    /** Só dígitos decimais formam um id: "../x", "-1", "+1", "1.5" e afins são recusados antes de tocar em qualquer arquivo. */
     fun parseId(raw: String): Long? = raw.takeIf { idPattern.matches(it) }?.toLongOrNull()
 
     /**
-     * Validates the `metadata` JSON. Returns null when it is not an object or lacks a usable chapterId / chapterUrl. The
-     * other fields are descriptive: missing ones become empty, and sourceId may come as a string or as a number.
+     * Valida o JSON de `metadata`. Devolve null se não for um objeto ou se faltar chapterId / chapterUrl utilizáveis. Os
+     * demais campos são descritivos: ausentes viram vazios, e sourceId pode vir como texto ou como número.
      */
     fun parseMetadata(text: String): ShelfMetadata? {
         val obj: JsonObject = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
 
-        fun primitive(name: String): JsonPrimitive? =
-            (obj[name] as? JsonPrimitive)?.takeIf { it !is JsonNull }
+        fun primitive(name: String): JsonPrimitive? = (obj[name] as? JsonPrimitive)?.takeIf { it !is JsonNull }
 
         val chapterId = primitive("chapterId")?.content?.let(::parseId) ?: return null
         val chapterUrl = primitive("chapterUrl")?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return null
@@ -134,7 +133,7 @@ object KarasuShelf {
         Files.move(partial.toPath(), recordFile(record.chapterId).toPath(), StandardCopyOption.REPLACE_EXISTING)
     }
 
-    /** Entries ordered by chapterId. An entry exists only when both of its files do; "*.part" never counts. */
+    /** Entradas ordenadas por chapterId. Só existe entrada com os dois arquivos; "*.part" nunca conta. */
     fun list(): List<ShelfEntryDto> =
         dir()
             .listFiles { f -> f.isFile && recordName.matches(f.name) }
@@ -146,9 +145,9 @@ object KarasuShelf {
             .map { it.toDto() }
 
     /**
-     * Stores (or replaces) the chapter. Replacing resets `read` to false. The content is written to a ".part" file and
-     * renamed at the end, so a failed or interrupted upload leaves the previous version untouched.
-     * @throws IllegalArgumentException when the content is empty.
+     * Grava (ou substitui) o capítulo. Substituir zera `read`. O conteúdo vai para um ".part" e é renomeado ao final,
+     * então um upload que falha ou é interrompido deixa a versão anterior intacta.
+     * @throws IllegalArgumentException se o conteúdo for vazio.
      */
     fun save(
         metadata: ShelfMetadata,
@@ -173,7 +172,7 @@ object KarasuShelf {
                     savedAt = System.currentTimeMillis(),
                 )
             synchronized(lock) {
-                // the entry is hidden while its archive is swapped, so no reader sees the new file with the old flag
+                // a entrada some enquanto o CBZ é trocado, para ninguém ver o arquivo novo com a marca antiga
                 recordFile(id).delete()
                 Files.move(partial.toPath(), archiveFile(id).toPath(), StandardCopyOption.REPLACE_EXISTING)
                 writeRecord(record)
@@ -184,7 +183,7 @@ object KarasuShelf {
         }
     }
 
-    /** Removes the entry; true if there was one. Asking for an id that does not exist is not an error. */
+    /** Remove a entrada; true se existia. Pedir um id inexistente não é erro. */
     fun delete(id: Long): Boolean =
         synchronized(lock) {
             val hadRecord = recordFile(id).delete()
@@ -192,13 +191,13 @@ object KarasuShelf {
             hadRecord || hadArchive
         }
 
-    /** The archive of an entry, or null when the chapter is not on the shelf. */
+    /** O CBZ de uma entrada, ou null se o capítulo não está na shelf. */
     fun archive(id: Long): File? =
         synchronized(lock) {
             archiveFile(id).takeIf { it.isFile && readRecord(id) != null }
         }
 
-    /** Sets the flag the KOReader plugin reports; false when the chapter is not on the shelf. */
+    /** Grava a marca que o plugin do KOReader informa; false se o capítulo não está na shelf. */
     fun setRead(
         id: Long,
         read: Boolean,
@@ -209,7 +208,7 @@ object KarasuShelf {
             true
         }
 
-    // Leftovers of uploads that died with the process; a live upload keeps touching its file.
+    // Restos de uploads que morreram junto com o processo; um upload vivo continua alterando o seu arquivo.
     private fun purgeStaleParts() {
         val limit = System.currentTimeMillis() - STALE_PART_MS
         dir()

@@ -48,7 +48,7 @@ object KarasuAPI {
             post("deletions", KarasuController::deletionsPost)
             get("deletions", KarasuController::deletionsGet)
 
-            // Yatagarasu (KOReader) shelf: the health check of the plugin is the "health" route above
+            // Shelf do Yatagarasu (KOReader): o health do plugin é a rota "health" acima
             get("shelf", KarasuShelfController::list)
             post("shelf", KarasuShelfController::upload)
             delete("shelf/{chapterId}", KarasuShelfController::delete)
