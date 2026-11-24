@@ -189,6 +189,28 @@ class KarasuOperationsTest : ApplicationTest() {
     }
 
     @Test
+    fun `the extension repo entity is accepted by append and filtered by list`() {
+        val url = "https://example.test/repo.json"
+        val value = KarasuOperations.extensionRepoValue(url)
+        val result =
+            KarasuOperations.append(
+                listOf(
+                    op("r1", entity = "EXTENSION_REPO", key = KarasuOperations.extensionRepoKey(url), value = value),
+                    op("r2", entity = "EXTENSION_REPO", key = KarasuOperations.extensionRepoKey(url), action = "REMOVE", value = null),
+                    op("c1"),
+                ),
+            )
+        assertEquals(OperationsAppendResultDto(3, 0), result)
+
+        val ops = KarasuOperations.list(0, "EXTENSION_REPO").operations
+        assertEquals(listOf("r1", "r2"), ops.map { it.id })
+        assertEquals(listOf("repo:$url", "repo:$url"), ops.map { it.key })
+        assertEquals(buildJsonObject { put("indexUrl", url) }, ops[0].value)
+        assertNull(ops[1].value)
+        assertEquals(3, KarasuOperations.list().operations.size)
+    }
+
+    @Test
     fun `list pages by seq, filters by entity and caps the limit`() {
         KarasuOperations.append((1..7).map { op("id$it", key = "category:$it", entity = if (it % 2 == 0) "CATEGORY" else "POLICY") })
 
