@@ -14,6 +14,7 @@ import io.javalin.apibuilder.ApiBuilder.path
 import io.javalin.apibuilder.ApiBuilder.post
 import io.javalin.apibuilder.ApiBuilder.put
 import suwayomi.tachidesk.manga.controller.KarasuController
+import suwayomi.tachidesk.manga.controller.KarasuShelfController
 
 /** Routes under /api/v1/karasu. Contract: docs/karasu-integration.md */
 object KarasuAPI {
@@ -46,6 +47,14 @@ object KarasuAPI {
 
             post("deletions", KarasuController::deletionsPost)
             get("deletions", KarasuController::deletionsGet)
+
+            // Yatagarasu (KOReader) shelf: the health check of the plugin is the "health" route above
+            get("shelf", KarasuShelfController::list)
+            post("shelf", KarasuShelfController::upload)
+            delete("shelf/{chapterId}", KarasuShelfController::delete)
+            get("shelf/{chapterId}/file", KarasuShelfController::file)
+            head("shelf/{chapterId}/file", KarasuShelfController::file)
+            put("shelf/{chapterId}/read", KarasuShelfController::setRead)
         }
     }
 }
