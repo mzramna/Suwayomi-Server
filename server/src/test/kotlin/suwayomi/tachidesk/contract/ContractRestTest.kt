@@ -237,6 +237,7 @@ class ContractRestTest {
 
     @Test
     fun `the web uploading and deleting a backup is logged by the server as web`() {
+        bystander()
         val payload = ByteArray(1_234) { it.toByte() }
         val seq = web.headSeq()
         val t0 = now()
@@ -252,10 +253,8 @@ class ContractRestTest {
         val t1 = now()
 
         val ops = web.operationsAfter(seq, "BACKUP")
-        assertEquals(
-            listOf("BACKUP SET backup:$id {\"device\":null,\"sizeBytes\":1234}", "BACKUP REMOVE backup:$id null"),
-            ops.map { it.summary },
-        )
+        // the REMOVE replaced the SET and stays as a tombstone for the other device
+        assertEquals(listOf("BACKUP REMOVE backup:$id null"), ops.map { it.summary })
         assertTrue(ops.all { it.deviceId == "web" && it.ts in (t0 - 2000)..(t1 + 2000) })
     }
 
@@ -357,14 +356,10 @@ class ContractRestTest {
 
         val ops = web.operationsAfter(seq, "MERGED")
         val key = "merged:${ContractConfig.SOURCE_ID}|$manga"
-        assertEquals(3, ops.size, ops.joinToString("\n") { it.summary })
+        // three changes of the same target: only the last one is kept
+        assertEquals(1, ops.size, ops.joinToString("\n") { it.summary })
         assertTrue(ops.all { it.key == key && it.action == "SET" && it.deviceId == "web" && it.ts in (t0 - 2000)..(t1 + 2000) })
-        assertEquals(
-            """{"sources":[{"sourceId":"7001","url":"/a","priority":0,"updatesEnabled":true},{"sourceId":"7002","url":"/b","priority":1,"updatesEnabled":false}]}""",
-            ops[0].value.toString(),
-        )
-        assertEquals("""{"sources":[{"sourceId":"7001","url":"/a","priority":0,"updatesEnabled":true}]}""", ops[1].value.toString())
-        assertEquals("""{"sources":[]}""", ops[2].value.toString())
+        assertEquals("""{"sources":[]}""", ops[0].value.toString())
         assertTrue(
             web
                 .get("manga/$mangaId/merged")
@@ -541,6 +536,7 @@ class ContractRestTest {
 
     @Test
     fun `history is set in seconds and removed with zero, as the web, and logged as SET and REMOVE`() {
+        bystander()
         val manga = mangaUrl(4)
         val chapterIds =
             app
@@ -580,9 +576,9 @@ class ContractRestTest {
         assertEquals(0L, web.manga(manga).chapter("$manga/c1").lastReadAt)
         web.put("history", history(chapterIds[0] to 0)) // already out: nothing
 
+        // c1: its SET was replaced by the REMOVE (a tombstone for the other device); c2: the SET
         assertEquals(
             listOf(
-                "HISTORY SET history:0|$manga|$manga/c1 {\"lastReadAt\":1700000000}",
                 "HISTORY SET history:0|$manga|$manga/c2 {\"lastReadAt\":1700000100}",
                 "HISTORY REMOVE history:0|$manga|$manga/c1 null",
             ),
@@ -609,6 +605,7 @@ class ContractRestTest {
 
     @Test
     fun `operations are published idempotently by id and read back in seq order with the app's own ts`() {
+        bystander()
         val seq = app.headSeq()
         val device = app.device!!
         val t = now() - 5 * 3600_000
@@ -629,13 +626,14 @@ class ContractRestTest {
 
         val page = app.get("operations", "afterSeq" to seq).obj
         val ops = page["operations"]!!.jsonArray.map { Op.of(it.jsonObject) }
-        assertEquals(3, ops.size, "no duplicates in the log")
+        // no duplicates, and c (REMOVE) replaced a (SET) of the same target
+        assertEquals(2, ops.size, "no duplicates in the log")
         assertTrue(ops.zipWithNext().all { (x, y) -> x.seq < y.seq })
-        assertEquals(listOf(t, t + 1000, t + 2000), ops.map { it.ts })
-        assertEquals(listOf(a, b, c).map { it["id"]!!.jsonPrimitive.content }, ops.map { it.id })
+        assertEquals(listOf(t + 1000, t + 2000), ops.map { it.ts })
+        assertEquals(listOf(b, c).map { it["id"]!!.jsonPrimitive.content }, ops.map { it.id })
         assertTrue(ops.all { it.deviceId == device })
-        assertEquals(listOf("SET", "SET", "REMOVE"), ops.map { it.action })
-        assertEquals("""{"name":"Contract"}""", ops[0].value.toString())
+        assertEquals(listOf("SET", "REMOVE"), ops.map { it.action })
+        assertEquals(null, ops[0].value)
         assertEquals(null, ops[1].value)
         assertEquals(ops.last().seq, page["lastSeq"]!!.jsonPrimitive.long)
         // serverTime lets the app correct its clock
@@ -643,11 +641,11 @@ class ContractRestTest {
         assertTrue(kotlin.math.abs(serverTime - now()) < 10_000)
 
         // paging and the entity filter
-        val firstPage = app.get("operations", "afterSeq" to seq, "limit" to 2).obj
-        assertEquals(2, firstPage["operations"]!!.jsonArray.size)
+        val firstPage = app.get("operations", "afterSeq" to seq, "limit" to 1).obj
+        assertEquals(1, firstPage["operations"]!!.jsonArray.size)
         val rest = app.get("operations", "afterSeq" to firstPage["lastSeq"]!!.jsonPrimitive.long).obj
         assertEquals(1, rest["operations"]!!.jsonArray.size)
-        assertEquals(2, app.operationsAfter(seq, "CATEGORY").size)
+        assertEquals(1, app.operationsAfter(seq, "CATEGORY").size)
         assertEquals(1, app.operationsAfter(seq, "CATEGORY_LINK").size)
         val empty = app.get("operations", "afterSeq" to ops.last().seq).obj
         assertTrue(empty["operations"]!!.jsonArray.isEmpty())

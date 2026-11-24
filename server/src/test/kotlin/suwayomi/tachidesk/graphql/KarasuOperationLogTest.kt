@@ -56,6 +56,17 @@ import kotlin.test.assertTrue
  * that do not carry `X-Karasu-Device` (the app publishes its own log, with the real time of each action).
  */
 class KarasuOperationLogTest : GraphQLTest() {
+    // these tests check WHAT the server records, change by change; compaction of the log has its own tests
+    @BeforeEach
+    fun keepEveryRecordedChange() {
+        KarasuOperations.compactOnWrite = false
+    }
+
+    @AfterEach
+    fun compactAgain() {
+        KarasuOperations.compactOnWrite = true
+    }
+
     @BeforeEach
     @AfterEach
     fun clean() {

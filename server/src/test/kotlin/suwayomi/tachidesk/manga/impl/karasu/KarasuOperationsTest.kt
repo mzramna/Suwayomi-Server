@@ -12,13 +12,19 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteAll
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.TestInstance
+import suwayomi.tachidesk.manga.model.table.KarasuDeviceTable
 import suwayomi.tachidesk.manga.model.table.KarasuOperationTable
+import suwayomi.tachidesk.manga.model.table.KarasuSeenOperationTable
+import suwayomi.tachidesk.manga.model.table.KarasuSettingTable
 import suwayomi.tachidesk.test.ApplicationTest
 import suwayomi.tachidesk.test.clearTables
 import kotlin.test.Test
@@ -34,6 +40,11 @@ class KarasuOperationsTest : ApplicationTest() {
     @AfterEach
     fun clean() {
         clearTables(KarasuOperationTable)
+        transaction {
+            KarasuDeviceTable.deleteAll()
+            KarasuSeenOperationTable.deleteAll()
+        }
+        transaction { KarasuSettingTable.deleteWhere { KarasuSettingTable.key eq "operations.prunedUpTo" } }
         KarasuRequestContext.clear()
     }
 
@@ -56,7 +67,7 @@ class KarasuOperationsTest : ApplicationTest() {
     fun `record stores the change as web, with the time of the change and a fresh seq each time`() {
         val before = System.currentTimeMillis()
         assertTrue(KarasuOperations.record(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, KarasuOperations.nameValue("A")))
-        assertTrue(KarasuOperations.record(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, KarasuOperations.nameValue("B")))
+        assertTrue(KarasuOperations.record(KarasuEntity.CATEGORY, "category:2", KarasuAction.SET, KarasuOperations.nameValue("B")))
 
         val page = KarasuOperations.list()
         assertEquals(2, page.operations.size)
@@ -79,6 +90,8 @@ class KarasuOperationsTest : ApplicationTest() {
 
     @Test
     fun `record does not store a no-op, but stores the same value again after something else happened`() {
+        // an active device makes REMOVE keep its tombstone, so "the last operation" of the key is always there
+        KarasuOperations.list(deviceId = "tablet")
         val name = KarasuOperations.nameValue("A")
         assertTrue(KarasuOperations.record(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, name))
         assertFalse(KarasuOperations.record(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, name))
@@ -91,7 +104,8 @@ class KarasuOperationsTest : ApplicationTest() {
         assertFalse(KarasuOperations.record(KarasuEntity.CATEGORY_LINK, "link:1|/m|1", KarasuAction.SET, JsonNull))
         // another key is independent
         assertTrue(KarasuOperations.record(KarasuEntity.CATEGORY, "category:2", KarasuAction.SET, name))
-        assertEquals(5, KarasuOperations.list().operations.size)
+        // compaction: one row per key (category:1, the link, category:2)
+        assertEquals(3, KarasuOperations.list().operations.size)
     }
 
     @Test
@@ -104,7 +118,12 @@ class KarasuOperationsTest : ApplicationTest() {
                     PendingOperation(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, KarasuOperations.nameValue("B")),
                 ),
             )
+        // the repeat is dropped as a no-op, the other change replaces the first (same key): one row is left
         assertEquals(2, written)
+        assertEquals(
+            listOf(KarasuOperations.nameValue("B")),
+            KarasuOperations.list().operations.map { it.value },
+        )
     }
 
     @Test
@@ -117,7 +136,7 @@ class KarasuOperationsTest : ApplicationTest() {
             }
             assertEquals("pixel-8", KarasuRequestContext.device())
             assertTrue(
-                KarasuOperations.record(KarasuEntity.POLICY, "policy", KarasuAction.SET, JsonPrimitive("z"), deviceId = "server"),
+                KarasuOperations.record(KarasuEntity.CATEGORY, "category:1", KarasuAction.SET, JsonPrimitive("z"), deviceId = "server"),
             )
         }
         assertNull(KarasuRequestContext.device())
@@ -153,9 +172,9 @@ class KarasuOperationsTest : ApplicationTest() {
     }
 
     @Test
-    fun `append stores operations as they are, even identical to the last one, and never touches state`() {
-        KarasuOperations.append(listOf(op("a"), op("b")))
-        assertEquals(2, KarasuOperations.list().operations.size)
+    fun `append compacts identical operations of the same target into the last one and never touches state`() {
+        assertEquals(OperationsAppendResultDto(2, 0), KarasuOperations.append(listOf(op("a"), op("b"))))
+        assertEquals(listOf("b"), KarasuOperations.list().operations.map { it.id })
     }
 
     @Test
@@ -202,12 +221,28 @@ class KarasuOperationsTest : ApplicationTest() {
             )
         assertEquals(OperationsAppendResultDto(3, 0), result)
 
+        // pixel is the only device and it made both: nobody is left to tell, SET and REMOVE cancel out
+        assertTrue(KarasuOperations.list(0, "EXTENSION_REPO").operations.isEmpty())
+        // with another active device the tombstone stays
+        KarasuOperations.list(deviceId = "tablet")
+        KarasuOperations.append(
+            listOf(
+                op("r3", entity = "EXTENSION_REPO", key = KarasuOperations.extensionRepoKey(url), value = value),
+                op(
+                    "r4",
+                    entity = "EXTENSION_REPO",
+                    key = KarasuOperations.extensionRepoKey(url),
+                    action = "REMOVE",
+                    value = null,
+                    ts = 1_700_000_000_001,
+                ),
+            ),
+        )
         val ops = KarasuOperations.list(0, "EXTENSION_REPO").operations
-        assertEquals(listOf("r1", "r2"), ops.map { it.id })
-        assertEquals(listOf("repo:$url", "repo:$url"), ops.map { it.key })
-        assertEquals(buildJsonObject { put("indexUrl", url) }, ops[0].value)
-        assertNull(ops[1].value)
-        assertEquals(3, KarasuOperations.list().operations.size)
+        assertEquals(listOf("r4"), ops.map { it.id })
+        assertEquals("repo:$url", ops[0].key)
+        assertNull(ops[0].value)
+        assertEquals(2, KarasuOperations.list().operations.size)
     }
 
     @Test
@@ -251,23 +286,26 @@ class KarasuOperationsTest : ApplicationTest() {
 
     @Test
     fun `pruneOld drops what was received more than 90 days ago`() {
-        KarasuOperations.append(listOf(op("recent"), op("old")))
+        KarasuOperations.append(listOf(op("recent"), op("old", key = "category:2")))
         val day = 24L * 60 * 60 * 1000
-        transaction {
-            KarasuOperationTable.insert {
-                it[opId] = "ancient"
-                it[deviceId] = "pixel"
-                it[ts] = 1
-                it[entity] = "POLICY"
-                it[key] = "policy"
-                it[keyHash] = "x"
-                it[action] = "SET"
-                it[receivedAt] = System.currentTimeMillis() - 91 * day
+        val ancientSeq =
+            transaction {
+                KarasuOperationTable
+                    .insertAndGetId {
+                        it[opId] = "ancient"
+                        it[deviceId] = "pixel"
+                        it[ts] = 1
+                        it[entity] = "POLICY"
+                        it[key] = "policy"
+                        it[keyHash] = "x"
+                        it[action] = "SET"
+                        it[receivedAt] = System.currentTimeMillis() - 91 * day
+                    }.value
             }
-        }
         assertEquals(3, KarasuOperations.list().operations.size)
         assertEquals(1, KarasuOperations.pruneOld())
         assertEquals(listOf("recent", "old"), KarasuOperations.list().operations.map { it.id })
+        assertEquals(ancientSeq + 1, KarasuOperations.list().minSeq, "the pruned mark moved to the ancient operation")
         // pretend it is 100 days later: everything goes
         assertEquals(2, KarasuOperations.pruneOld(System.currentTimeMillis() + 100 * day))
     }

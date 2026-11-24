@@ -48,7 +48,8 @@ class ContractGraphQlTest {
     // ---- categories ---------------------------------------------------------------------------------------
 
     @Test
-    fun `the web creating, renaming and deleting a category is logged with ts and device web`() {
+    fun `the web creating, renaming and deleting a category is logged with ts and device web, compacted to the last one`() {
+        bystander()
         val seq = web.headSeq()
         val t0 = now()
         val name = "web-cat-$suffix"
@@ -57,22 +58,17 @@ class ContractGraphQlTest {
         assertEquals("$name-2", web.renameCategory(id, "$name-2")) // updateCategory: the rename the contract talks about
         assertEquals("$name-2", app.categories()[id])
         assertEquals("$name-2", web.renameCategory(id, "$name-2")) // same name: nothing
+        // creating and renaming left one operation: the rename
+        assertEquals(listOf("CATEGORY SET category:$id {\"name\":\"$name-2\"}"), web.operationsAfter(seq, "CATEGORY").map { it.summary })
         web.deleteCategory(id)
         assertFalse(id in app.categories())
         web.deleteCategory(id) // already gone: nothing
         val t1 = now()
 
         val ops = web.operationsAfter(seq, "CATEGORY")
-        assertEquals(
-            listOf(
-                "CATEGORY SET category:$id {\"name\":\"$name\"}",
-                "CATEGORY SET category:$id {\"name\":\"$name-2\"}",
-                "CATEGORY REMOVE category:$id null",
-            ),
-            ops.map { it.summary },
-        )
+        // the REMOVE replaced the SET: one tombstone, for the device that may hold the category
+        assertEquals(listOf("CATEGORY REMOVE category:$id null"), ops.map { it.summary })
         assertTrue(ops.all { it.deviceId == "web" && it.ts in window(t0, t1) })
-        assertTrue(ops.zipWithNext().all { (a, b) -> a.seq < b.seq && a.ts <= b.ts })
     }
 
     @Test
@@ -92,19 +88,19 @@ class ContractGraphQlTest {
                 appOperation(app.device!!, renamed, "CATEGORY", "category:$id", "SET", buildJsonObject { put("name", "$name-2") }),
             )
         assertEquals(2, result.obj["accepted"]!!.jsonPrimitive.int)
+        // both were accepted, the rename replaced the creation
         val ops = web.operationsAfter(seq, "CATEGORY")
-        assertEquals(listOf(created, renamed), ops.map { it.ts })
-        assertEquals(listOf(app.device, app.device), ops.map { it.deviceId })
-        assertEquals(listOf("""{"name":"$name"}""", """{"name":"$name-2"}"""), ops.map { it.value.toString() })
+        assertEquals(listOf(renamed), ops.map { it.ts })
+        assertEquals(listOf(app.device), ops.map { it.deviceId })
+        assertEquals(listOf("""{"name":"$name-2"}"""), ops.map { it.value.toString() })
 
         // later the web renames it: a second device in the log, newer ts, the key is the same
         val t0 = now()
         web.renameCategory(id, "$name-web")
         val all = web.operationsAfter(seq, "CATEGORY")
-        assertEquals(3, all.size)
+        assertEquals(1, all.size, "the newer operation of the other device replaces it")
         assertEquals("web", all.last().deviceId)
         assertTrue(all.last().ts >= t0 - 2000 && all.last().ts > renamed)
-        assertEquals(1, all.map { it.key }.toSet().size)
         web.deleteCategory(id)
     }
 
@@ -112,6 +108,7 @@ class ContractGraphQlTest {
 
     @Test
     fun `the web adding and removing a manga in categories is logged by source, manga url and category`() {
+        bystander()
         val manga = mangaUrl(1)
         val mangaId = web.manga(manga).id
         val a = web.createCategory("web-link-a-$suffix")
@@ -142,13 +139,12 @@ class ContractGraphQlTest {
         val t1 = now()
 
         val ops = web.operationsAfter(seq, "CATEGORY_LINK")
-        // the two SETs of one request have no defined order between them; the REMOVE comes last
+        // link b is still set; link a was set and removed: its SET was replaced by the tombstone
         assertEquals(
-            setOf("CATEGORY_LINK SET link:0|$manga|$a null", "CATEGORY_LINK SET link:0|$manga|$b null"),
-            ops.take(2).map { it.summary }.toSet(),
+            setOf("CATEGORY_LINK SET link:0|$manga|$b null", "CATEGORY_LINK REMOVE link:0|$manga|$a null"),
+            ops.map { it.summary }.toSet(),
         )
-        assertEquals("CATEGORY_LINK REMOVE link:0|$manga|$a null", ops[2].summary)
-        assertEquals(3, ops.size)
+        assertEquals(2, ops.size)
         assertTrue(ops.all { it.deviceId == "web" && it.ts in window(t0, t1) && it.value == null })
 
         web.updateMangaCategories(mangaId, add = emptyList(), remove = listOf(b))
@@ -158,6 +154,7 @@ class ContractGraphQlTest {
 
     @Test
     fun `the app linking and unlinking a manga is not logged by the server, the app publishes it`() {
+        bystander()
         val manga = mangaUrl(2)
         val mangaId = app.manga(manga).id
         val cat = app.createCategory("app-link-$suffix")
@@ -177,8 +174,8 @@ class ContractGraphQlTest {
             appOperation(app.device!!, unlinkedAt, "CATEGORY_LINK", key, "REMOVE"),
         )
         val ops = web.operationsAfter(seq, "CATEGORY_LINK")
-        assertEquals(listOf("SET", "REMOVE"), ops.map { it.action })
-        assertEquals(listOf(linkedAt, unlinkedAt), ops.map { it.ts })
+        assertEquals(listOf("REMOVE"), ops.map { it.action }, "the REMOVE replaced the SET and stays as a tombstone for the other device")
+        assertEquals(listOf(unlinkedAt), ops.map { it.ts })
         assertTrue(ops.all { it.deviceId == app.device && it.key == key })
         web.deleteCategory(cat)
     }
@@ -287,6 +284,7 @@ class ContractGraphQlTest {
 
     @Test
     fun `the web adding and removing an extension repository is logged as web with the repo key`() {
+        bystander()
         val url = stores.store("/contract-web-$suffix/index.json")
         val seq = web.headSeq()
         val t0 = now()
@@ -301,16 +299,13 @@ class ContractGraphQlTest {
         val t1 = now()
 
         val ops = web.operationsAfter(seq, "EXTENSION_REPO")
-        assertEquals(
-            listOf("EXTENSION_REPO SET repo:$url {\"indexUrl\":\"$url\"}", "EXTENSION_REPO REMOVE repo:$url null"),
-            ops.map { it.summary },
-        )
+        assertEquals(listOf("EXTENSION_REPO REMOVE repo:$url null"), ops.map { it.summary })
         assertTrue(ops.all { it.deviceId == "web" && it.ts in window(t0, t1) })
-        assertTrue(ops[0].seq < ops[1].seq)
     }
 
     @Test
     fun `the app adding and removing an extension repository is not logged by the server, the app publishes it`() {
+        bystander()
         val url = stores.store("/contract-app-$suffix/index.json")
         val seq = app.headSeq()
         val addedAt = now() - 3 * 3600_000 // the action happened three hours before this sync
@@ -330,15 +325,15 @@ class ContractGraphQlTest {
             )
         assertEquals(2, result.obj["accepted"]!!.jsonPrimitive.int)
         val ops = web.operationsAfter(seq, "EXTENSION_REPO")
-        assertEquals(listOf("SET", "REMOVE"), ops.map { it.action })
-        assertEquals(listOf(addedAt, removedAt), ops.map { it.ts })
-        assertEquals(listOf("""{"indexUrl":"$url"}""", "null"), ops.map { it.value.toString() })
+        assertEquals(listOf("REMOVE"), ops.map { it.action })
+        assertEquals(listOf(removedAt), ops.map { it.ts })
+        assertEquals(listOf("null"), ops.map { it.value.toString() })
         assertTrue(ops.all { it.deviceId == app.device && it.key == key })
 
         // and the web adding it back is the newer operation on the same key, from the other device
         web.addExtensionStore(url)
         val all = web.operationsAfter(seq, "EXTENSION_REPO")
-        assertEquals(3, all.size)
+        assertEquals(1, all.size, "the web's SET replaces the tombstone")
         assertEquals("web", all.last().deviceId)
         assertEquals(key, all.last().key)
         assertTrue(all.last().ts > removedAt)
@@ -348,7 +343,7 @@ class ContractGraphQlTest {
     // ---- both devices -------------------------------------------------------------------------------------
 
     @Test
-    fun `an app change and a web change on the same chapter end up as two operations with their devices and no duplicates`() {
+    fun `an app change older than the web change on the same chapter is discarded as a duplicate, the newer one stays`() {
         val manga = mangaUrl(9)
         val chapter =
             app
@@ -377,17 +372,16 @@ class ContractGraphQlTest {
                     put("lastPageRead", 1)
                 },
             )
-        assertEquals(1, publish(op).obj["accepted"]!!.jsonPrimitive.int)
+        // the web's operation (newer ts) is in the log already: the app's older one is not kept, now or on a retry
+        val first = publish(op)
+        assertEquals(0, first.obj["accepted"]!!.jsonPrimitive.int)
+        assertEquals(1, first.obj["duplicates"]!!.jsonPrimitive.int)
         assertEquals(1, publish(op).obj["duplicates"]!!.jsonPrimitive.int)
 
         val ops = app.operationsAfter(seq, "PROGRESS")
-        assertEquals(2, ops.size)
-        // seq is the order the server learned things, ts is the order they happened
-        assertEquals(listOf("web", app.device), ops.map { it.deviceId })
+        assertEquals(listOf("web"), ops.map { it.deviceId })
         assertEquals("""{"read":true,"lastPageRead":2}""", ops[0].value.toString())
         assertTrue(ops[0].ts >= webStart - 2000)
-        assertEquals(appTs, ops[1].ts)
-        assertTrue(ops[1].ts < ops[0].ts)
         val final = web.manga(manga).chapter("$manga/c1")
         assertEquals(true, final.isRead)
         assertEquals(2, final.lastPageRead)
@@ -395,12 +389,13 @@ class ContractGraphQlTest {
 
     @Test
     fun `a header with only blanks counts as the web`() {
+        bystander()
         val blank = ContractClient("   ")
         val seq = web.headSeq()
         val id = blank.createCategory("blank-$suffix")
         blank.deleteCategory(id)
         val ops = web.operationsAfter(seq, "CATEGORY")
-        assertEquals(2, ops.size)
+        assertEquals(listOf("CATEGORY REMOVE category:$id null"), ops.map { it.summary })
         assertTrue(ops.all { it.deviceId == "web" })
     }
 }

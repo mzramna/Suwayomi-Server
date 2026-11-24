@@ -76,12 +76,14 @@ class ContractClient(
         body: ByteArray? = null,
         contentType: String? = "application/json",
         withAuth: Boolean = true,
+        headers: Map<String, String> = emptyMap(),
     ): ContractResponse {
         val builder = HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(60))
         if (withAuth && user.isNotEmpty()) {
             builder.header("Authorization", "Basic " + Base64.getEncoder().encodeToString("$user:$pass".toByteArray()))
         }
         device?.let { builder.header("X-Karasu-Device", it) }
+        headers.forEach { (name, value) -> builder.header(name, value) }
         if (body != null && contentType != null) builder.header("Content-Type", contentType)
         builder.method(method, if (body == null) HttpRequest.BodyPublishers.noBody() else HttpRequest.BodyPublishers.ofByteArray(body))
         val response = http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
@@ -94,6 +96,20 @@ class ContractClient(
         path: String,
         vararg query: Pair<String, Any?>,
     ) = request("GET", karasu(path + queryString(query)))
+
+    /** GET with extra request headers (e.g. `Accept-Encoding: gzip`); the body is returned as it came on the wire. */
+    fun getWith(
+        path: String,
+        headers: Map<String, String>,
+        vararg query: Pair<String, Any?>,
+    ) = request("GET", karasu(path + queryString(query)), headers = headers)
+
+    /** POST of a body that is already encoded (e.g. gzip) with the given extra headers. */
+    fun postEncoded(
+        path: String,
+        body: ByteArray,
+        headers: Map<String, String>,
+    ) = request("POST", karasu(path), body, headers = headers)
 
     fun head(path: String) = request("HEAD", karasu(path))
 
@@ -365,6 +381,12 @@ class ContractClient(
                 "chapters { nodes { id url isRead lastPageRead lastReadAt } } } pageInfo { hasNextPage } } }"
     }
 }
+
+/**
+ * Another active device. With one around, a REMOVE keeps its tombstone (the other device may hold the target); with only
+ * the device that made it (or the web) active, a SET and its REMOVE cancel out and leave nothing in the log.
+ */
+fun bystander(): ContractClient = ContractClient("contract-bystander-" + UUID.randomUUID().toString().take(8)).also { it.headSeq() }
 
 data class LibraryChapter(
     val id: Int,

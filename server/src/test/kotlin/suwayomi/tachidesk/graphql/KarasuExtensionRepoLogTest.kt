@@ -39,6 +39,17 @@ class KarasuExtensionRepoLogTest : GraphQLTest() {
     @AfterAll
     fun stopStores() = stores.close()
 
+    // these tests check WHAT the server records, change by change; compaction of the log has its own tests
+    @BeforeEach
+    fun keepEveryRecordedChange() {
+        KarasuOperations.compactOnWrite = false
+    }
+
+    @AfterEach
+    fun compactAgain() {
+        KarasuOperations.compactOnWrite = true
+    }
+
     @BeforeEach
     @AfterEach
     fun clean() {
