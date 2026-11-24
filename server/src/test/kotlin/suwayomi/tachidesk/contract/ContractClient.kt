@@ -188,6 +188,24 @@ class ContractClient(
             .jsonArray
             .associate { it.jsonObject["id"]!!.jsonPrimitive.int to it.jsonObject["name"]!!.jsonPrimitive.content }
 
+    /** The WebUI's and the app's `addExtensionStore`; returns the index url the server keeps for the store. */
+    fun addExtensionStore(indexUrl: String): String =
+        graphql(ADD_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })["addExtensionStore"]!!
+            .jsonObject["extensionStore"]!!
+            .jsonObject["indexUrl"]!!
+            .jsonPrimitive.content
+
+    fun removeExtensionStore(indexUrl: String) {
+        graphql(REMOVE_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })
+    }
+
+    fun extensionStoreUrls(): Set<String> =
+        graphql(EXTENSION_STORES)["extensionStores"]!!
+            .jsonObject["nodes"]!!
+            .jsonArray
+            .map { it.jsonObject["indexUrl"]!!.jsonPrimitive.content }
+            .toSet()
+
     fun updateMangaCategories(
         mangaId: Int,
         add: Collection<Int>,
@@ -335,6 +353,11 @@ class ContractClient(
         const val UPDATE_MANGA_CATEGORIES =
             "mutation KarasuUpdateMangaCategories(\$id: Int!, \$add: [Int!], \$remove: [Int!]) { " +
                 "updateMangaCategories(input: {id: \$id, patch: {addToCategories: \$add, removeFromCategories: \$remove}}) { clientMutationId } }"
+        const val ADD_EXTENSION_STORE =
+            "mutation KarasuAddExtensionStore(\$indexUrl: String!) { addExtensionStore(input: {indexUrl: \$indexUrl}) { extensionStore { indexUrl } } }"
+        const val REMOVE_EXTENSION_STORE =
+            "mutation KarasuRemoveExtensionStore(\$indexUrl: String!) { removeExtensionStore(input: {indexUrl: \$indexUrl}) { extensionStore { indexUrl } } }"
+        const val EXTENSION_STORES = "query KarasuExtensionStores { extensionStores { nodes { indexUrl } } }"
         const val LIBRARY =
             "query KarasuLibrary(\$first: Int!, \$offset: Int!) { " +
                 "mangas(filter: {inLibrary: {equalTo: true}}, orderBy: ID, orderByType: ASC, " +

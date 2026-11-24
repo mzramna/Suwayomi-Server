@@ -114,9 +114,25 @@ chave, `action`, valor JSON, `received_at`); retenção de 90 dias (poda na subi
   (400 sem gravar nada); máximo de 10000 por requisição. Guarda `deviceId` e `ts` como o app mandou.
 * `GET /operations?afterSeq=0&entity=&limit=1000` → `{"operations":[...+seq],"lastSeq":n,"serverTime":ms}` ordenado por `seq`;
   `limit` máx. 5000 (acima disso é reduzido); `lastSeq` = `seq` da última operação devolvida, ou o próprio `afterSeq` se não há nada novo.
-* Entidades e chaves: ver a tabela do contrato (`category:<id>`, `link:<sourceId>|<mangaUrl>|<categoryId>`,
-  `progress:`/`history:`/`deletion:<sourceId>|<mangaUrl>|<chapterUrl>`, `merged:<sourceId>|<mangaUrl>`, `policy`, `backup:<id>`).
-  `sourceId` é a fonte da obra como string; `merged:` usa a obra primária.
+* Entidades e chaves (`sourceId` é a fonte da obra como string; `merged:` usa a obra primária):
+
+  | `entity` | `key` | `value` (SET) | quem o servidor registra sozinho |
+  |---|---|---|---|
+  | `CATEGORY` | `category:<id>` | `{"name":"..."}` | criar/renomear (SET), apagar (REMOVE) |
+  | `CATEGORY_LINK` | `link:<sourceId>\|<mangaUrl>\|<categoryId>` | nenhum | vincular (SET), desvincular (REMOVE) |
+  | `PROGRESS` | `progress:<sourceId>\|<mangaUrl>\|<chapterUrl>` | `{"read":bool,"lastPageRead":n}` | mudança de lido/página |
+  | `HISTORY` | `history:<sourceId>\|<mangaUrl>\|<chapterUrl>` | `{"lastReadAt":segundos}` | `PUT /history` (REMOVE para 0) |
+  | `DELETION` | `deletion:<sourceId>\|<mangaUrl>\|<chapterUrl>` | `{"deleteFromServer":bool}` | `POST /deletions` |
+  | `MERGED` | `merged:<sourceId>\|<mangaUrl>` | `{"sources":[MergedSource]}` | `PUT /merged` |
+  | `POLICY` | `policy` | `{"downloadPolicy":"..."}` | `PUT /policy` |
+  | `BACKUP` | `backup:<id>` | `{"device":"...","sizeBytes":n}` | upload (SET) / exclusão (REMOVE) |
+  | `EXTENSION_REPO` | `repo:<indexUrl>` | `{"indexUrl":"..."}` | adicionar (SET) / remover (REMOVE) repositório de extensões |
+
+  `EXTENSION_REPO`: `<indexUrl>` é a URL que o servidor guarda para o repositório (a que `extensionStores { indexUrl }` devolve; se
+  o servidor a reescreve ao adicionar, p.ex. `.../index.min.json` -> `.../repo.json`, vale a reescrita). `REMOVE` não tem `value`.
+  Não há rota REST nova: o app lê e altera os repositórios pelo GraphQL (`extensionStores`, `addExtensionStore`,
+  `removeExtensionStore`, permissão `MANAGE_EXTENSION_STORES`) e publica o próprio log em `POST /operations`; o filtro
+  `GET /operations?entity=EXTENSION_REPO` devolve só estas operações.
 
 ## Quem registra: o header `X-Karasu-Device`
 
@@ -127,7 +143,11 @@ chave, `action`, valor JSON, `received_at`); retenção de 90 dias (poda na subi
   (valor diferente do anterior; no-op não registra). Pontos instrumentados: criar/renomear/apagar categoria
   (`createCategory`/`updateCategory(s)`/`deleteCategory` e os equivalentes REST), vínculo obra↔categoria
   (`updateManga(s)Categories` e REST), `isRead`/`lastPageRead` de capítulo (`updateChapter(s)` e REST), e as rotas
-  `PUT /history`, `PUT /merged`, `PUT /manga/{id}/merged`, `PUT /policy`, `POST /deletions`, upload/exclusão de backup.
+  `PUT /history`, `PUT /merged`, `PUT /manga/{id}/merged`, `PUT /policy`, `POST /deletions`, upload/exclusão de backup, e
+  adicionar/remover repositório de extensões (`addExtensionStore`/`removeExtensionStore` e a sincronização da configuração
+  `extensionStores` com o banco). Repositório: só entra no log o que mudou de fato (adicionar um que já existe ou remover um que
+  não existe não registra) e as trocas de URL que o próprio servidor faz sozinho ao atualizar a lista (redirecionamento,
+  `index.min.json` -> `repo.json` de um repositório que já está no banco) também não.
   Apagar uma categoria não gera `REMOVE` dos vínculos dela (o app vê pelo `REMOVE` da categoria). `bookmark` não é progresso.
 
 Como o header chega às mutações: um handler `before` do Javalin lê o header (e um `after` limpa); o contexto GraphQL carrega

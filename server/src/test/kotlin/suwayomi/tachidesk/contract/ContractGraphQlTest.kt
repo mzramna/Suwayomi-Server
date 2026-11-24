@@ -13,7 +13,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty
+import suwayomi.tachidesk.test.FakeExtensionStoreServer
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -274,6 +276,73 @@ class ContractGraphQlTest {
         assertEquals("progress:0|$manga|$manga/c1", newest.key)
         assertEquals("""{"read":false,"lastPageRead":2}""", newest.value.toString())
         assertTrue(newest.ts >= t0 - 2000 && newest.ts > readAt)
+    }
+
+    // ---- extension repositories ---------------------------------------------------------------------------
+
+    private val stores = FakeExtensionStoreServer()
+
+    @AfterEach
+    fun stopStores() = stores.close()
+
+    @Test
+    fun `the web adding and removing an extension repository is logged as web with the repo key`() {
+        val url = stores.store("/contract-web-$suffix/index.json")
+        val seq = web.headSeq()
+        val t0 = now()
+
+        assertEquals(url, web.addExtensionStore(url))
+        assertTrue(url in app.extensionStoreUrls())
+        assertEquals(url, web.addExtensionStore(url)) // already there: nothing
+        web.removeExtensionStore(url)
+        assertFalse(url in app.extensionStoreUrls())
+        web.removeExtensionStore(url) // already gone: nothing
+        web.removeExtensionStore("http://127.0.0.1:1/never-$suffix/index.json") // never existed: nothing
+        val t1 = now()
+
+        val ops = web.operationsAfter(seq, "EXTENSION_REPO")
+        assertEquals(
+            listOf("EXTENSION_REPO SET repo:$url {\"indexUrl\":\"$url\"}", "EXTENSION_REPO REMOVE repo:$url null"),
+            ops.map { it.summary },
+        )
+        assertTrue(ops.all { it.deviceId == "web" && it.ts in window(t0, t1) })
+        assertTrue(ops[0].seq < ops[1].seq)
+    }
+
+    @Test
+    fun `the app adding and removing an extension repository is not logged by the server, the app publishes it`() {
+        val url = stores.store("/contract-app-$suffix/index.json")
+        val seq = app.headSeq()
+        val addedAt = now() - 3 * 3600_000 // the action happened three hours before this sync
+        val removedAt = addedAt + 600_000
+
+        assertEquals(url, app.addExtensionStore(url))
+        assertTrue(url in web.extensionStoreUrls())
+        app.removeExtensionStore(url)
+        assertFalse(url in web.extensionStoreUrls())
+        assertTrue(app.operationsAfter(seq).isEmpty(), "the server must not stamp the app's change with the sync time")
+
+        val key = "repo:$url"
+        val result =
+            publish(
+                appOperation(app.device!!, addedAt, "EXTENSION_REPO", key, "SET", buildJsonObject { put("indexUrl", url) }),
+                appOperation(app.device!!, removedAt, "EXTENSION_REPO", key, "REMOVE"),
+            )
+        assertEquals(2, result.obj["accepted"]!!.jsonPrimitive.int)
+        val ops = web.operationsAfter(seq, "EXTENSION_REPO")
+        assertEquals(listOf("SET", "REMOVE"), ops.map { it.action })
+        assertEquals(listOf(addedAt, removedAt), ops.map { it.ts })
+        assertEquals(listOf("""{"indexUrl":"$url"}""", "null"), ops.map { it.value.toString() })
+        assertTrue(ops.all { it.deviceId == app.device && it.key == key })
+
+        // and the web adding it back is the newer operation on the same key, from the other device
+        web.addExtensionStore(url)
+        val all = web.operationsAfter(seq, "EXTENSION_REPO")
+        assertEquals(3, all.size)
+        assertEquals("web", all.last().deviceId)
+        assertEquals(key, all.last().key)
+        assertTrue(all.last().ts > removedAt)
+        web.removeExtensionStore(url)
     }
 
     // ---- both devices -------------------------------------------------------------------------------------
